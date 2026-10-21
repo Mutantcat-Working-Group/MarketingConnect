@@ -234,9 +234,12 @@ mod tests {
 
     #[test]
     fn test_civil_from_days() {
-        // 2026-10-21 是 Unix 天数 20704（近似验证）
-        let (y, m, d) = civil_from_days(20704);
+        // 2026-10-21 是 Unix 天数 20747
+        let (y, m, d) = civil_from_days(20747);
         assert_eq!((y, m, d), (2026, 10, 21));
+        // 1970-01-01 是第 0 天
+        let (y, m, d) = civil_from_days(0);
+        assert_eq!((y, m, d), (1970, 1, 1));
     }
 
     #[test]

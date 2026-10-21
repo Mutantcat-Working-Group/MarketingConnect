@@ -74,7 +74,7 @@ impl SessionRegistry {
                 Err(e) => warn!("账号 {} cookie 恢复失败: {}", account.name, e),
             }
             // 恢复后刷新页面使 cookie 生效
-            let _ = page.goto(&creator_url).await;
+            let _ = page.goto(creator_url.as_str()).await;
         }
 
         self.sessions
@@ -192,16 +192,22 @@ async fn restore_cookies(page: &Page, cookies_json: &str) -> Result<usize> {
             format!("http://{}", host)
         };
 
-        let mut param = CookieParam::new(c.name.clone(), c.value.clone()).url(url);
+        let mut builder = CookieParam::builder()
+            .name(c.name.clone())
+            .value(c.value.clone())
+            .url(url);
         if let Some(path) = &c.path {
-            param = param.path(path.clone());
+            builder = builder.path(path.clone());
         }
         if let Some(secure) = c.secure {
-            param = param.secure(secure);
+            builder = builder.secure(secure);
         }
         if let Some(http_only) = c.http_only {
-            param = param.http_only(http_only);
+            builder = builder.http_only(http_only);
         }
+        let param = builder
+            .build()
+            .map_err(|e| anyhow::anyhow!("CookieParam 构建失败: {}", e))?;
 
         if let Err(e) = page.set_cookie(param).await {
             warn!("恢复 cookie {}.{} 失败: {}", host, c.name, e);

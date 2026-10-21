@@ -6,7 +6,8 @@
 use crate::db::{Account, AccountStatus, Db, NewAccount, PublishTask};
 use crate::obscura::ObscuraManager;
 use crate::session::SessionRegistry;
-use tauri::{AppHandle, State};
+use std::sync::Arc;
+use tauri::{AppHandle, Manager, State};
 
 /// 列出所有账号
 #[tauri::command]
@@ -270,9 +271,10 @@ pub fn get_sms_config(db: State<'_, Db>) -> Result<serde_json::Value, String> {
     let config = db.get_sms_config().map_err(|e| e.to_string())?;
     match config {
         Some(c) => {
-            // 密钥脱敏：只显示前 4 位
-            let masked = if c.access_key_secret.len() > 4 {
-                format!("{}****", &c.access_key_secret[..4])
+            // 密钥脱敏：只显示前 4 个字符（按字符切片避免多字节 panic）
+            let masked = if c.access_key_secret.chars().count() > 4 {
+                let prefix: String = c.access_key_secret.chars().take(4).collect();
+                format!("{}****", prefix)
             } else if c.access_key_secret.is_empty() {
                 String::new()
             } else {

@@ -76,7 +76,7 @@ impl CdpBrowser {
     /// 释放浏览器上下文
     pub async fn dispose_context(&self, context_id: &str) -> Result<()> {
         self.browser
-            .dispose_browser_context(context_id)
+            .dispose_browser_context(context_id.to_string())
             .await
             .context("释放 BrowserContext 失败")?;
         Ok(())

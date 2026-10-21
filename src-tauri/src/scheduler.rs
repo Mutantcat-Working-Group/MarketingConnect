@@ -39,6 +39,8 @@ impl PublishScheduler {
         task_id: String,
         account_id: String,
     ) -> Result<()> {
+        // 先克隆用于日志（闭包会 move 走原值）
+        let task_id_log = task_id.clone();
         let job = Job::new_async(cron_expr, move |_uuid, _lock| {
             let app = app.clone();
             let task_id = task_id.clone();
@@ -48,7 +50,7 @@ impl PublishScheduler {
             })
         })?;
         self.scheduler.add(job).await?;
-        info!("已注册定时任务 {}（cron: {}）", task_id, cron_expr);
+        info!("已注册定时任务 {}（cron: {}）", task_id_log, cron_expr);
         Ok(())
     }
 }
