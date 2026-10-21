@@ -9,11 +9,12 @@ use chromiumoxide::cdp::browser_protocol::target::{
     CreateBrowserContextParams, CreateTargetParams,
 };
 use futures::StreamExt;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use tracing::info;
 
-/// CDP 浏览器连接（全局单例）
+/// CDP 浏览器连接（每个 Obscura 实例一个）
 pub struct CdpBrowser {
     browser: Browser,
     _handler_task: tokio::task::JoinHandle<()>,
@@ -82,30 +83,48 @@ impl CdpBrowser {
     }
 }
 
-/// 全局 CDP 状态（Tauri managed state）
+/// 全局 CDP 连接状态（Tauri managed state）
+///
+/// 每个 Obscura 实例（按代理分组）对应一条 CDP 连接，
+/// 以实例端口为 key。
 pub struct CdpState {
-    inner: TokioMutex<Option<Arc<CdpBrowser>>>,
+    browsers: TokioMutex<HashMap<u16, Arc<CdpBrowser>>>,
 }
 
 impl CdpState {
     pub fn new() -> Self {
         CdpState {
-            inner: TokioMutex::new(None),
+            browsers: TokioMutex::new(HashMap::new()),
         }
     }
 
-    /// 获取已连接的浏览器，未连接则返回 None
-    pub async fn get(&self) -> Option<Arc<CdpBrowser>> {
-        self.inner.lock().await.clone()
+    /// 获取指定端口的已连接浏览器
+    pub async fn get(&self, port: u16) -> Option<Arc<CdpBrowser>> {
+        self.browsers.lock().await.get(&port).cloned()
     }
 
-    /// 设置已连接的浏览器
-    pub async fn set(&self, browser: Arc<CdpBrowser>) {
-        *self.inner.lock().await = Some(browser);
+    /// 记录指定端口的连接
+    pub async fn set(&self, port: u16, browser: Arc<CdpBrowser>) {
+        self.browsers.lock().await.insert(port, browser);
     }
 
-    /// 清除连接
-    pub async fn clear(&self) {
-        *self.inner.lock().await = None;
+    /// 获取或建立指定端口的 CDP 连接
+    pub async fn get_or_connect(&self, port: u16, ws_url: &str) -> Result<Arc<CdpBrowser>> {
+        if let Some(b) = self.get(port).await {
+            return Ok(b);
+        }
+        let browser = Arc::new(CdpBrowser::connect(ws_url).await?);
+        self.set(port, browser.clone()).await;
+        Ok(browser)
+    }
+
+    /// 清除所有连接
+    pub async fn clear_all(&self) {
+        self.browsers.lock().await.clear();
+    }
+
+    /// 当前连接数
+    pub async fn len(&self) -> usize {
+        self.browsers.lock().await.len()
     }
 }

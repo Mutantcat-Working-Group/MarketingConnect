@@ -7,9 +7,14 @@ import AccountWorkspace from "./components/AccountWorkspace.vue";
 const accounts = ref<api.Account[]>([]);
 const openTabs = ref<string[]>([]);
 const activeTab = ref<string | null>(null);
-const engine = ref<api.EngineStatus>({ running: false, port: 9222, ws_url: "" });
+const engine = ref<api.EngineStatus>({ instances: [], count: 0 });
 const engineLoading = ref(false);
 const logs = ref<api.EventLog[]>([]);
+
+const engineRunning = computed(() => engine.value.count > 0);
+const directInstance = computed(
+  () => engine.value.instances.find((i) => i.proxy === "direct") ?? null
+);
 
 const activeAccount = computed(() =>
   accounts.value.find((a) => a.id === activeTab.value) ?? null
@@ -23,7 +28,7 @@ async function loadEngine() {
   try {
     engine.value = await api.engineStatus();
   } catch {
-    engine.value = { running: false, port: 9222, ws_url: "" };
+    engine.value = { instances: [], count: 0 };
   }
 }
 
@@ -38,7 +43,7 @@ async function loadLogs() {
 async function toggleEngine() {
   engineLoading.value = true;
   try {
-    if (engine.value.running) {
+    if (engineRunning.value) {
       await api.stopEngine();
     } else {
       await api.startEngine();
@@ -81,12 +86,12 @@ onMounted(async () => {
         <span class="brand-sub">MarketingConnect</span>
       </div>
       <div class="engine-status">
-        <span class="badge" :class="engine.running ? 'online' : 'offline'">
-          {{ engine.running ? "引擎运行中" : "引擎未启动" }}
+        <span class="badge" :class="engineRunning ? 'online' : 'offline'">
+          {{ engineRunning ? `引擎运行中 (${engine.count})` : "引擎未启动" }}
         </span>
-        <span v-if="engine.running" class="engine-port">:{{ engine.port }}</span>
+        <span v-if="directInstance" class="engine-port">:{{ directInstance.port }}</span>
         <button :disabled="engineLoading" @click="toggleEngine">
-          {{ engineLoading ? "..." : engine.running ? "停止引擎" : "启动引擎" }}
+          {{ engineLoading ? "..." : engineRunning ? "停止引擎" : "启动引擎" }}
         </button>
       </div>
     </header>

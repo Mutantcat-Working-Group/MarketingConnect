@@ -5,7 +5,6 @@
 //! - 作业触发时执行发布流程（会话页面 → 平台适配器 → 更新任务状态）
 
 use crate::db::Db;
-use crate::obscura::CdpState;
 use crate::platforms::{self, PublishContent};
 use crate::session::SessionRegistry;
 use anyhow::Result;
@@ -91,19 +90,10 @@ async fn execute_publish(app: &AppHandle, task_id: &str, account_id: &str) {
         }
     };
 
-    // 2. 获取账号会话页面
-    let cdp = app.state::<CdpState>();
+    // 2. 获取账号会话页面（按代理自动启动实例）
     let sessions = app.state::<SessionRegistry>();
 
-    let browser = match cdp.get().await {
-        Some(b) => b,
-        None => {
-            fail_task(&db, task_id, "引擎未启动");
-            return;
-        }
-    };
-
-    if let Err(e) = sessions.open(&browser, &db, &account).await {
+    if let Err(e) = sessions.open(app, &db, &account).await {
         fail_task(&db, task_id, &format!("打开会话失败: {}", e));
         return;
     }

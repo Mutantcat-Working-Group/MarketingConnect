@@ -4,10 +4,9 @@
 //! 会话管理（开关/检测/cookie 持久化）、发布任务管理。
 
 use crate::db::{Account, AccountStatus, Db, NewAccount, PublishTask};
-use crate::obscura::{CdpState, ObscuraManager};
+use crate::obscura::ObscuraManager;
 use crate::session::SessionRegistry;
-use anyhow::Result;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 /// 列出所有账号
 #[tauri::command]
@@ -21,86 +20,56 @@ pub fn create_account(db: State<Db>, input: NewAccount) -> Result<Account, Strin
     db.create_account(&input).map_err(|e| e.to_string())
 }
 
-/// 删除账号
+/// 删除账号（联动关闭会话）
 #[tauri::command]
 pub async fn delete_account(
+    app: AppHandle,
     db: State<'_, Db>,
-    cdp: State<'_, CdpState>,
     sessions: State<'_, SessionRegistry>,
-    obscura: State<'_, ObscuraManager>,
     id: String,
 ) -> Result<(), String> {
-    // 先关闭会话（若引擎在运行）
-    if let Some(browser) = cdp.get().await {
-        let _ = sessions.close(&browser, &id).await;
-    }
-    let _ = obscura; // 保持引用，避免提前释放
+    let _ = sessions.close(&app, &id).await;
     db.delete_account(&id).map_err(|e| e.to_string())
 }
 
-/// 启动 Obscura CDP 引擎（进程 + CDP 连接）
+/// 启动 Obscura 引擎（直连实例）
+///
+/// 带代理的账号会在打开会话时按需自动启动对应实例。
 #[tauri::command]
-pub async fn start_engine(
-    app: tauri::AppHandle,
+pub fn start_engine(
+    app: AppHandle,
     obscura: State<'_, ObscuraManager>,
-    cdp: State<'_, CdpState>,
 ) -> Result<String, String> {
-    // 1. 启动 obscura serve 进程
-    obscura.start(&app).map_err(|e| e.to_string())?;
-
-    // 2. 建立 CDP 连接
-    if cdp.get().await.is_none() {
-        let browser = crate::obscura::client::CdpBrowser::connect(&obscura.ws_url())
-            .await
-            .map_err(|e| format!("CDP 连接失败: {}", e))?;
-        cdp.set(std::sync::Arc::new(browser)).await;
-    }
-
-    Ok(format!("引擎已启动，端口 {}", obscura.port()))
+    let port = obscura
+        .get_or_start(&app, None)
+        .map_err(|e| e.to_string())?;
+    Ok(format!("引擎已启动，直连实例端口 {}", port))
 }
 
-/// 停止 Obscura CDP 引擎
+/// 停止 Obscura 引擎（所有实例）
 #[tauri::command]
-pub async fn stop_engine(
-    cdp: State<'_, CdpState>,
-    obscura: State<'_, ObscuraManager>,
-) -> Result<(), String> {
-    cdp.clear().await;
-    obscura.stop();
+pub fn stop_engine(obscura: State<ObscuraManager>) -> Result<(), String> {
+    obscura.stop_all();
     Ok(())
 }
 
 /// 引擎状态查询
 #[tauri::command]
 pub fn engine_status(obscura: State<ObscuraManager>) -> Result<serde_json::Value, String> {
-    Ok(serde_json::json!({
-        "running": obscura.is_port_open(),
-        "port": obscura.port(),
-        "ws_url": obscura.ws_url(),
-    }))
+    Ok(obscura.status())
 }
 
 /// 打开账号会话（创建独立 context，恢复 cookie）
 #[tauri::command]
 pub async fn open_account_session(
+    app: AppHandle,
     db: State<'_, Db>,
-    cdp: State<'_, CdpState>,
     sessions: State<'_, SessionRegistry>,
     account_id: String,
 ) -> Result<(), String> {
-    let browser = cdp
-        .get()
-        .await
-        .ok_or("引擎未启动，请先启动引擎")?;
-
-    let accounts = db.list_accounts().map_err(|e| e.to_string())?;
-    let account = accounts
-        .iter()
-        .find(|a| a.id == account_id)
-        .ok_or("账号不存在")?;
-
+    let account = find_account(&db, &account_id)?;
     sessions
-        .open(&browser, &db, account)
+        .open(&app, &db, &account)
         .await
         .map_err(|e| e.to_string())
 }
@@ -108,17 +77,14 @@ pub async fn open_account_session(
 /// 关闭账号会话
 #[tauri::command]
 pub async fn close_account_session(
-    cdp: State<'_, CdpState>,
+    app: AppHandle,
     sessions: State<'_, SessionRegistry>,
     account_id: String,
 ) -> Result<(), String> {
-    if let Some(browser) = cdp.get().await {
-        sessions
-            .close(&browser, &account_id)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    sessions
+        .close(&app, &account_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 账号会话检测（掉号检测）
@@ -127,28 +93,18 @@ pub async fn close_account_session(
 /// 并更新账号状态；掉号时发送系统通知。
 #[tauri::command]
 pub async fn check_account_session(
-    app: tauri::AppHandle,
+    app: AppHandle,
     db: State<'_, Db>,
-    cdp: State<'_, CdpState>,
     sessions: State<'_, SessionRegistry>,
     account_id: String,
 ) -> Result<bool, String> {
     use tauri_plugin_notification::NotificationExt;
 
-    let browser = cdp
-        .get()
-        .await
-        .ok_or("引擎未启动，请先启动引擎")?;
-
-    let accounts = db.list_accounts().map_err(|e| e.to_string())?;
-    let account = accounts
-        .iter()
-        .find(|a| a.id == account_id)
-        .ok_or("账号不存在")?;
+    let account = find_account(&db, &account_id)?;
 
     // 确保会话已打开
     sessions
-        .open(&browser, &db, account)
+        .open(&app, &db, &account)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -215,7 +171,7 @@ pub async fn save_account_cookies(
 /// 若带 cron 表达式，自动注册到定时调度器。
 #[tauri::command]
 pub fn create_publish_task(
-    app: tauri::AppHandle,
+    app: AppHandle,
     db: State<'_, Db>,
     account_id: String,
     title: Option<String>,
@@ -286,4 +242,13 @@ pub fn list_platforms() -> Result<Vec<serde_json::Value>, String> {
             "name": a.display_name(),
         }))
         .collect())
+}
+
+/// 从数据库查找账号
+fn find_account(db: &Db, account_id: &str) -> std::result::Result<Account, String> {
+    db.list_accounts()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())
 }

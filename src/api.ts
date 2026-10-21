@@ -50,11 +50,16 @@ export interface EventLog {
   created_at: number;
 }
 
-/** 引擎状态 */
-export interface EngineStatus {
-  running: boolean;
+/** 引擎状态（多实例：按代理分组） */
+export interface EngineInstance {
+  proxy: string;
   port: number;
-  ws_url: string;
+  running: boolean;
+}
+
+export interface EngineStatus {
+  instances: EngineInstance[];
+  count: number;
 }
 
 /** 平台信息 */

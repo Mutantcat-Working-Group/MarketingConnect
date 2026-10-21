@@ -1,7 +1,8 @@
 //! 账号会话生命周期管理
 //!
 //! 每个账号对应一个独立的 Obscura BrowserContext：
-//! - open: 创建 context + page，从数据库恢复加密的 cookie
+//! - open: 按账号代理获取/启动 Obscura 实例，创建 context + page，
+//!   从数据库恢复加密的 cookie
 //! - export_cookies: 导出页面 cookie，加密存入数据库
 //! - close: 释放 context
 //!
@@ -9,19 +10,22 @@
 //! cookie 的持久化在 SQLite（加密），跨重启恢复。
 
 use crate::db::{Account, Db};
-use crate::obscura::client::CdpBrowser;
+use crate::obscura::{CdpBrowser, CdpState, ObscuraManager};
 use crate::platforms;
 use anyhow::{Context, Result};
 use chromiumoxide::cdp::browser_protocol::network::CookieParam;
 use chromiumoxide::Page;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 
 /// 账号会话：独立的 BrowserContext + Page
 pub struct AccountSession {
     pub context_id: String,
     pub page: Page,
+    /// 所属 Obscura 实例端口（用于释放时定位）
+    pub port: u16,
 }
 
 /// 会话注册表（account_id → session）
@@ -38,25 +42,32 @@ impl SessionRegistry {
 
     /// 为账号打开会话
     ///
-    /// 1. 创建独立 BrowserContext + Page（导航到平台创作者首页）
-    /// 2. 若数据库有保存的 cookie，解密后恢复到页面
-    pub async fn open(&self, cdp: &CdpBrowser, db: &Db, account: &Account) -> Result<()> {
+    /// 1. 按账号代理获取/启动 Obscura 实例并建立 CDP 连接
+    /// 2. 创建独立 BrowserContext + Page（导航到平台创作者首页）
+    /// 3. 若数据库有保存的 cookie，解密后恢复到页面
+    pub async fn open(&self, app: &AppHandle, db: &Db, account: &Account) -> Result<()> {
         // 已存在则直接返回
         if self.get_page(account.id.as_str()).is_some() {
             return Ok(());
         }
 
-        // 平台创作者首页 URL
+        // 1. 解析实例与 CDP 连接
+        let (port, browser) = resolve_browser(app, account).await?;
+
+        // 2. 平台创作者首页 URL
         let creator_url = platforms::find_adapter(&account.platform)
             .map(|a| a.creator_url().to_string())
             .unwrap_or_else(|| "about:blank".to_string());
 
-        info!("为账号 {} 创建会话（平台: {}）", account.name, account.platform);
+        info!(
+            "为账号 {} 创建会话（平台: {}，实例端口: {}）",
+            account.name, account.platform, port
+        );
 
-        // 创建 context + page
-        let (context_id, page) = cdp.create_context_page(&creator_url).await?;
+        // 3. 创建 context + page
+        let (context_id, page) = browser.create_context_page(&creator_url).await?;
 
-        // 恢复已保存的 cookie
+        // 4. 恢复已保存的 cookie
         if let Some(cookies_json) = db.get_account_cookies(&account.id)? {
             match restore_cookies(&page, &cookies_json).await {
                 Ok(n) => info!("账号 {} 恢复了 {} 个 cookie", account.name, n),
@@ -69,17 +80,28 @@ impl SessionRegistry {
         self.sessions
             .lock()
             .unwrap()
-            .insert(account.id.clone(), AccountSession { context_id, page });
+            .insert(
+                account.id.clone(),
+                AccountSession {
+                    context_id,
+                    page,
+                    port,
+                },
+            );
 
         Ok(())
     }
 
     /// 关闭账号会话（释放 context）
-    pub async fn close(&self, cdp: &CdpBrowser, account_id: &str) -> Result<()> {
+    pub async fn close(&self, app: &AppHandle, account_id: &str) -> Result<()> {
         let session = self.sessions.lock().unwrap().remove(account_id);
         if let Some(session) = session {
             info!("关闭账号 {} 的会话", account_id);
-            cdp.dispose_context(&session.context_id).await?;
+            // 通过端口找到对应的 CDP 连接释放 context
+            let cdp = app.state::<CdpState>();
+            if let Some(browser) = cdp.get(session.port).await {
+                browser.dispose_context(&session.context_id).await?;
+            }
         }
         Ok(())
     }
@@ -115,6 +137,25 @@ impl SessionRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// 按账号代理解析 Obscura 实例与 CDP 连接
+///
+/// 返回 (实例端口, CDP 浏览器连接)。
+pub async fn resolve_browser(
+    app: &AppHandle,
+    account: &Account,
+) -> Result<(u16, Arc<CdpBrowser>)> {
+    let obscura = app.state::<ObscuraManager>();
+    let cdp = app.state::<CdpState>();
+
+    // 获取/启动账号代理对应的实例
+    let port = obscura.get_or_start(app, account.proxy_url.as_deref())?;
+
+    // 获取/建立 CDP 连接
+    let browser = cdp.get_or_connect(port, &crate::obscura::ws_url(port)).await?;
+
+    Ok((port, browser))
 }
 
 /// 把 JSON 格式的 cookie 数组恢复到页面
