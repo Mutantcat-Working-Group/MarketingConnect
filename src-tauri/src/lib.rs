@@ -9,6 +9,7 @@ mod obscura;
 mod platforms;
 mod scheduler;
 mod session;
+mod session_monitor;
 mod sms;
 
 use db::Db;
@@ -60,6 +61,9 @@ pub fn run() {
                     }
                 }
             });
+
+            // 会话健康监控（后台周期检测掉号，默认 5 分钟）
+            session_monitor::spawn_monitor(app.handle().clone(), None);
 
             Ok(())
         })

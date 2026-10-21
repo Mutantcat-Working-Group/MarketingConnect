@@ -157,6 +157,11 @@ impl SessionRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// 当前打开会话的账号 ID 列表
+    pub fn open_account_ids(&self) -> Vec<String> {
+        self.sessions.lock().unwrap().keys().cloned().collect()
+    }
 }
 
 /// 按账号代理解析 Obscura 实例与 CDP 连接
