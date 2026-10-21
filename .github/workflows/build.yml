@@ -50,6 +50,7 @@ jobs:
         run: pnpm install
 
       - name: Download Obscura sidecar
+        shell: bash
         run: ./scripts/download-obscura.sh
 
       - name: Install Linux system dependencies

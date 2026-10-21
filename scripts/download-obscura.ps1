@@ -32,9 +32,23 @@ Write-Host "解压 ..."
 Expand-Archive -Force -LiteralPath $TmpAsset -DestinationPath $BinDir
 
 # 按 Tauri sidecar 约定重命名（Windows 加 .exe 后缀）
+# 兼容两种归档布局：文件在根目录，或文件在子目录中
 $ObscuraExe = Join-Path $BinDir "obscura.exe"
+if (-not (Test-Path $ObscuraExe)) {
+    $Found = Get-ChildItem -Path $BinDir -Filter "obscura.exe" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($Found) {
+        Move-Item -Force $Found.FullName $ObscuraExe
+    }
+}
 if (Test-Path $ObscuraExe) {
     Move-Item -Force $ObscuraExe $Target
+}
+
+if (-not (Test-Path $Target)) {
+    Write-Error "未能定位 obscura 可执行文件（归档内部布局可能已变化）"
+    Get-ChildItem -Path $BinDir -Recurse -Depth 3 -File | ForEach-Object { Write-Host $_.FullName }
+    exit 1
 }
 
 # worker 仅 scrape 命令需要，serve 模式用不到

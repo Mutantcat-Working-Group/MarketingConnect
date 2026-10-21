@@ -78,6 +78,13 @@ case "$ASSET" in
 esac
 
 # 按 Tauri sidecar 约定重命名（Windows 加 .exe 后缀）
+# 兼容两种归档布局：文件在根目录，或文件在子目录中
+if [ ! -f "$BIN_DIR/obscura" ] && [ ! -f "$BIN_DIR/obscura.exe" ]; then
+  FOUND="$(find "$BIN_DIR" -maxdepth 3 -type f \( -name "obscura" -o -name "obscura.exe" \) | head -1 || true)"
+  if [ -n "$FOUND" ]; then
+    mv "$FOUND" "$BIN_DIR/obscura$EXT"
+  fi
+fi
 if [ -f "$BIN_DIR/obscura" ]; then
   mv "$BIN_DIR/obscura" "$TARGET"
 fi
@@ -85,6 +92,13 @@ if [ -f "$BIN_DIR/obscura.exe" ]; then
   mv "$BIN_DIR/obscura.exe" "$TARGET"
 fi
 chmod +x "$TARGET" 2>/dev/null || true
+
+if [ ! -f "$TARGET" ]; then
+  echo "错误: 未能定位 obscura 可执行文件（归档内部布局可能已变化）" >&2
+  echo "归档内容:" >&2
+  find "$BIN_DIR" -maxdepth 3 -type f >&2 || true
+  exit 1
+fi
 
 # worker 仅 scrape 命令需要，serve 模式用不到，保留但不强制
 if [ -f "$BIN_DIR/obscura-worker" ]; then
