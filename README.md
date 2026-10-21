@@ -4,15 +4,16 @@
 
 ## 功能规划
 
-- [x] 多平台兼容（平台适配器架构）
-- [x] 多帐号登录态隔离（Obscura BrowserContext）
+- [x] 多平台兼容（平台适配器架构 + 自定义平台注册）
+- [x] 多帐号登录态隔离（Obscura BrowserContext，按代理分组多实例）
 - [x] 选项卡式账号工作台
-- [x] 代理地址支持（按代理分组实例）
-- [ ] 自定义平台（适配器接口已就绪）
-- [ ] 自动化定时发布（调度器骨架已就绪）
-- [ ] 帐密加密存储与自动续期（加密层已就绪）
-- [ ] 掉号提示（检测接口已就绪）
-- [ ] 短信提醒登录
+- [x] 代理地址支持（每代理组一个独立 obscura serve 实例）
+- [x] 自定义平台（用户注册任意平台：URL + 表单选择器）
+- [x] 自动化定时发布（cron 表达式注册调度器）
+- [x] 帐密加密存储与自动续期（AES-GCM + cookie 持久化恢复）
+- [x] 掉号提示（系统通知 + 短信双通道）
+- [x] 短信提醒登录（阿里云短信，配置于设置面板）
+- [x] 页面截图（无头模式登录辅助：扫码/填表可视化）
 
 ## 技术栈
 
@@ -31,22 +32,35 @@
 ```
 ┌──────────────────────────────────────────────┐
 │  Tauri 2 外壳 (Rust)                          │
-│  ├─ Vue 3 前端（选项卡式账号工作台）             │
-│  ├─ SQLite（账号/代理/任务/日志/cookie 存储）    │
+│  ├─ Vue 3 前端（选项卡式账号工作台 + 设置面板）  │
+│  ├─ SQLite（账号/代理/任务/日志/cookie/设置）    │
 │  ├─ 调度器（tokio-cron-scheduler）             │
 │  ├─ 凭据加密（AES-GCM + 机器绑定密钥）           │
-│  └─ 通知（系统托盘 + 短信网关）                  │
+│  └─ 通知（系统通知 + 阿里云短信）                │
 ├──────────────────────────────────────────────┤
 │  Obscura Sidecar（~70MB，Tauri externalBin）   │
-│  ├─ obscura serve --port 9222 --stealth       │
+│  ├─ 多实例：每个代理组一个 serve 进程           │
+│  │   （--proxy 为进程级参数，多实例实现每账号代理）│
 │  ├─ 每账号一个 BrowserContext（cookie 隔离）     │
 │  ├─ 每会话指纹随机化 + 3520 个追踪域名拦截        │
 │  └─ CDP WebSocket 接口                         │
 ├──────────────────────────────────────────────┤
 │  CDP 驱动层（chromiumoxide，纯 Rust）           │
 │  └─ 平台适配器（登录/发布/会话检测）              │
+│     ├─ 内置适配器（douyin）                     │
+│     └─ 自定义平台适配器（DB 配置驱动）            │
 └──────────────────────────────────────────────┘
 ```
+
+## 使用流程
+
+1. **启动引擎**：顶栏点击「启动引擎」（直连实例）
+2. **新增账号**：左侧「新增账号」，选择平台（含自定义平台），填写帐密与代理
+3. **打开会话**：账号工作台点击「打开会话」——自动按代理启动对应实例
+4. **手动登录**：查看页面截图，扫码或输入帐密完成登录
+5. **保存 Cookie**：登录成功后点击「保存 Cookie」（加密持久化，重启自动恢复）
+6. **创建发布任务**：填写内容，可选 cron 表达式定时发布
+7. **掉号提醒**：会话检测发现掉号时，系统通知 + 短信（如已配置）双通道提醒
 
 ## 支持平台
 
@@ -106,38 +120,46 @@ pnpm tauri build --target aarch64-apple-darwin   # macOS Apple Silicon
 ```
 ├── src/                        # Vue 3 前端
 │   ├── api.ts                  # Tauri 命令封装（TypeScript 类型）
-│   ├── App.vue                 # 主布局（顶栏 + 侧边栏 + 选项卡 + 工作台）
+│   ├── App.vue                 # 主布局（顶栏 + 侧边栏 + 选项卡 + 工作台 + 设置弹层）
 │   └── components/
 │       ├── AccountSidebar.vue  # 账号管理（列表 + 新增表单）
-│       ├── AccountWorkspace.vue# 发布工作台（任务创建 + 列表）
+│       ├── AccountWorkspace.vue# 发布工作台（会话 + 截图 + 任务）
+│       ├── SmsSettings.vue     # 短信提醒配置
+│       ├── CustomPlatforms.vue # 自定义平台管理
 │       └── ...
 ├── src-tauri/                  # Rust 后端
 │   ├── src/
 │   │   ├── lib.rs              # 入口：模块注册 + Tauri 命令
-│   │   ├── db.rs               # SQLite 数据层（账号/任务/日志）
+│   │   ├── db.rs               # SQLite 数据层（账号/任务/日志/设置/自定义平台）
 │   │   ├── crypto.rs           # AES-GCM 加密（钥匙串主密钥）
+│   │   ├── sms.rs              # 阿里云短信（HMAC-SHA1 签名）
 │   │   ├── accounts.rs         # 账号管理 Tauri 命令
 │   │   ├── scheduler.rs        # 定时发布调度器
+│   │   ├── session.rs          # 账号会话生命周期（context/cookie/截图）
 │   │   ├── obscura/
-│   │   │   ├── mod.rs          # sidecar 进程管理
+│   │   │   ├── mod.rs          # sidecar 多实例管理（按代理分组）
 │   │   │   └── client.rs       # CDP 客户端（chromiumoxide）
 │   │   └── platforms/
-│   │       ├── mod.rs          # 平台适配器 trait
-│   │       └── douyin.rs       # 抖音适配器（骨架）
+│   │       ├── mod.rs          # 平台适配器 trait + 注册表
+│   │       ├── douyin.rs       # 抖音适配器（骨架）
+│   │       └── custom.rs       # 自定义平台适配器（配置驱动）
 │   ├── binaries/               # Obscura sidecar（gitignore，脚本下载）
 │   └── tauri.conf.json
 ├── scripts/
-│   └── download-obscura.sh     # Obscura 二进制下载脚本
-└── docs/superpowers/specs/     # 设计文档
+│   ├── download-obscura.sh     # Obscura 二进制下载脚本（macOS/Linux/Windows Git Bash）
+│   └── download-obscura.ps1    # Windows PowerShell 版
+└── docs/superpowers/specs/     # 设计文档（含 spike 验证记录）
 ```
 
 ## 当前进度
 
-MVP 骨架已完成：Tauri 2 + Vue 3 工程、Obscura sidecar 集成、SQLite 数据层、
-凭据加密、选项卡式 UI、平台适配器接口。
+全部 9 项原始需求已实现，三平台（macOS / Windows / Linux）CI 构建通过。
 
-**下一步（Spike 验证）**：验证 Obscura 对抖音创作者平台的渲染兼容性，
-通过后填充 `platforms/douyin.rs` 的登录与发布流程。
+**Spike 验证结论**（详见设计文档）：Obscura 可完整渲染抖音创作者平台
+（登录入口可见、JS 全量执行），「手动登录 + 加密 cookie 持久化」架构可行。
+
+**下一步**：填充 `platforms/douyin.rs` 的自动登录与发布流程
+（当前为骨架，发布走自定义平台的选择器方案亦可覆盖）。
 
 ## License
 
