@@ -1,0 +1,147 @@
+/* 营销通全局样式 - 深色专业主题 */
+
+:root {
+  --bg-primary: #0f1115;
+  --bg-secondary: #161923;
+  --bg-tertiary: #1d2130;
+  --bg-hover: #252a3a;
+  --border: #2a3040;
+  --text-primary: #e8eaf0;
+  --text-secondary: #9aa3b8;
+  --text-muted: #5c6478;
+  --accent: #4f7cff;
+  --accent-hover: #6b91ff;
+  --success: #34c98e;
+  --warning: #f5a623;
+  --danger: #f0524f;
+  --radius: 8px;
+
+  color: var(--text-primary);
+  background-color: var(--bg-primary);
+  font-family: "PingFang SC", "Microsoft YaHei", Inter, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+button:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button.primary:hover {
+  background: var(--accent-hover);
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+button.danger:hover {
+  border-color: var(--danger);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+}
+
+/* 状态徽章 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 99px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.badge.online {
+  color: var(--success);
+  background: rgba(52, 201, 142, 0.12);
+}
+
+.badge.offline {
+  color: var(--text-muted);
+  background: rgba(92, 100, 120, 0.15);
+}
+
+.badge.error {
+  color: var(--danger);
+  background: rgba(240, 82, 79, 0.12);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
