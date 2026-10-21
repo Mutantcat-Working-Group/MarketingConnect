@@ -65,6 +65,9 @@ pub fn run() {
             // 会话健康监控（后台周期检测掉号，默认 5 分钟）
             session_monitor::spawn_monitor(app.handle().clone(), None);
 
+            // 系统托盘（最小化到托盘 + 快捷菜单）
+            setup_tray(app)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -92,4 +95,71 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// 系统托盘：显示主窗口 / 引擎状态 / 退出
+///
+/// 关闭窗口时隐藏到托盘（保持后台会话监控运行），
+/// 通过托盘菜单「退出」或左键单击托盘图标恢复窗口。
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::WindowEvent;
+
+    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let status = MenuItem::with_id(app, "status", "引擎状态", false, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &status, &quit])?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .expect("缺少应用图标");
+
+    // 关闭窗口 → 隐藏到托盘（不退出，保持后台监控）
+    if let Some(window) = app.get_webview_window("main") {
+        let w = window.clone();
+        window.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = w.hide();
+            }
+        });
+    }
+
+    TrayIconBuilder::new()
+        .icon(icon)
+        .tooltip("营销通")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            "quit" => {
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // 左键单击显示主窗口
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
 }
