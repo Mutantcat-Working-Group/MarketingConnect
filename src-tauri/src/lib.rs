@@ -74,6 +74,7 @@ pub fn run() {
             accounts::close_account_session,
             accounts::check_account_session,
             accounts::save_account_cookies,
+            accounts::capture_screenshot,
             accounts::create_publish_task,
             accounts::list_publish_tasks,
             accounts::recent_logs,

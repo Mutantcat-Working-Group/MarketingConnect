@@ -100,6 +100,9 @@ export const checkAccountSession = (accountId: string) =>
 export const saveAccountCookies = (accountId: string) =>
   invoke<number>("save_account_cookies", { accountId });
 
+export const captureScreenshot = (accountId: string) =>
+  invoke<string>("capture_screenshot", { accountId });
+
 // ---------- 发布任务 ----------
 
 export const createPublishTask = (params: {

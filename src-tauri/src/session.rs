@@ -128,6 +128,26 @@ impl SessionRegistry {
         Ok(cookies.len())
     }
 
+    /// 截取账号当前页面（PNG 字节）
+    ///
+    /// 用于无头模式下的登录辅助：用户查看截图完成扫码/填表登录。
+    /// 默认截取整页（full_page），适配登录页的滚动内容。
+    pub async fn screenshot(&self, account_id: &str) -> Result<Vec<u8>> {
+        let page = self
+            .get_page(account_id)
+            .context("账号会话不存在，无法截图")?;
+
+        let params = chromiumoxide::page::ScreenshotParams::builder()
+            .full_page(true)
+            .build();
+
+        let png = page
+            .screenshot(params)
+            .await
+            .context("页面截图失败")?;
+        Ok(png)
+    }
+
     /// 当前打开的会话数量
     pub fn len(&self) -> usize {
         self.sessions.lock().unwrap().len()

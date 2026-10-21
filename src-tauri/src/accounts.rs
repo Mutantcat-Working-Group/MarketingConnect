@@ -185,6 +185,21 @@ pub async fn save_account_cookies(
         .map_err(|e| e.to_string())
 }
 
+/// 截取账号当前页面（返回 base64 PNG）
+///
+/// 用于无头模式下的登录辅助：用户查看截图完成扫码/填表登录。
+#[tauri::command]
+pub async fn capture_screenshot(
+    sessions: State<'_, SessionRegistry>,
+    account_id: String,
+) -> Result<String, String> {
+    let png = sessions
+        .screenshot(&account_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(png))
+}
+
 /// 创建发布任务
 ///
 /// 若带 cron 表达式，自动注册到定时调度器。
