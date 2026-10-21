@@ -249,6 +249,123 @@ pub fn create_publish_task(
     Ok(task)
 }
 
+/// 批量发布：将同一内容发布到多个账号（矩阵营销核心工作流）
+///
+/// 逐个账号处理：未打开会话的自动打开，发布结果按账号返回。
+#[tauri::command]
+pub async fn batch_publish(
+    app: AppHandle,
+    db: State<'_, Db>,
+    sessions: State<'_, SessionRegistry>,
+    account_ids: Vec<String>,
+    title: Option<String>,
+    content: String,
+    media_paths: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut results = Vec::new();
+
+    // 解析媒体路径（逗号分隔）
+    let media: Vec<String> = media_paths
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for account_id in &account_ids {
+        // 1. 查找账号
+        let account = match find_account(&db, account_id) {
+            Ok(a) => a,
+            Err(e) => {
+                results.push(serde_json::json!({
+                    "account_id": account_id,
+                    "account_name": null,
+                    "success": false,
+                    "error": e,
+                }));
+                continue;
+            }
+        };
+
+        // 2. 打开会话（未打开时自动打开）
+        if sessions.get_page(account_id).is_none() {
+            if let Err(e) = sessions.open(&app, &db, &account).await {
+                results.push(serde_json::json!({
+                    "account_id": account_id,
+                    "account_name": account.name,
+                    "success": false,
+                    "error": format!("打开会话失败: {}", e),
+                }));
+                continue;
+            }
+        }
+
+        // 3. 获取页面
+        let page = match sessions.get_page(account_id) {
+            Some(p) => p,
+            None => {
+                results.push(serde_json::json!({
+                    "account_id": account_id,
+                    "account_name": account.name,
+                    "success": false,
+                    "error": "会话页面不存在",
+                }));
+                continue;
+            }
+        };
+
+        // 4. 调用平台适配器发布
+        let publish_content = crate::platforms::PublishContent {
+            title: title.clone(),
+            text: content.clone(),
+            media_paths: media.clone(),
+        };
+
+        let result = match crate::platforms::find_adapter(&account.platform, Some(&db)) {
+            Some(adapter) => match adapter.publish(&page, &publish_content).await {
+                Ok(()) => {
+                    let _ = db.log_event(
+                        Some(account_id),
+                        "info",
+                        "batch_publish",
+                        Some("批量发布成功"),
+                    );
+                    serde_json::json!({
+                        "account_id": account_id,
+                        "account_name": account.name,
+                        "success": true,
+                        "error": null,
+                    })
+                }
+                Err(e) => {
+                    let _ = db.log_event(
+                        Some(account_id),
+                        "error",
+                        "batch_publish",
+                        Some(&format!("批量发布失败: {}", e)),
+                    );
+                    serde_json::json!({
+                        "account_id": account_id,
+                        "account_name": account.name,
+                        "success": false,
+                        "error": e.to_string(),
+                    })
+                }
+            },
+            None => serde_json::json!({
+                "account_id": account_id,
+                "account_name": account.name,
+                "success": false,
+                "error": format!("不支持的平台: {}", account.platform),
+            }),
+        };
+        results.push(result);
+    }
+
+    Ok(results)
+}
+
 /// 列出账号的发布任务
 #[tauri::command]
 pub fn list_publish_tasks(
@@ -438,6 +555,19 @@ pub fn create_custom_platform(
 #[tauri::command]
 pub fn delete_custom_platform(db: State<'_, Db>, id: String) -> Result<(), String> {
     db.delete_custom_platform(&id).map_err(|e| e.to_string())
+}
+
+// ---------- 敏感词检测 ----------
+
+/// 检测文本中的敏感词（发布前合规检查）
+#[tauri::command]
+pub fn check_sensitive_words(text: String) -> Result<serde_json::Value, String> {
+    let hits = crate::sensitive_words::check_sensitive_words(&text);
+    Ok(serde_json::json!({
+        "hits": hits,
+        "count": hits.len(),
+        "word_count": crate::sensitive_words::word_count(),
+    }))
 }
 
 /// 从数据库查找账号

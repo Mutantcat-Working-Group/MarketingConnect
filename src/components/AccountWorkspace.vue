@@ -27,6 +27,10 @@ const cronExpr = ref("");
 const submitting = ref(false);
 const message = ref("");
 
+// 敏感词检测
+const checking = ref(false);
+const sensitiveResult = ref<api.SensitiveCheckResult | null>(null);
+
 async function loadTasks() {
   loading.value = true;
   try {
@@ -108,6 +112,17 @@ function stopAutoRefresh() {
   if (refreshTimer) {
     clearInterval(refreshTimer);
     refreshTimer = null;
+  }
+}
+
+async function checkWords() {
+  checking.value = true;
+  try {
+    sensitiveResult.value = await api.checkSensitiveWords(content.value);
+  } catch (e) {
+    message.value = `检测失败: ${e}`;
+  } finally {
+    checking.value = false;
   }
 }
 
@@ -206,6 +221,21 @@ onUnmounted(stopAutoRefresh);
             内容
             <textarea v-model="content" rows="4" placeholder="发布正文..."></textarea>
           </label>
+          <div class="sensitive-check">
+            <button
+              class="small"
+              :disabled="checking || !content.trim()"
+              @click="checkWords"
+            >
+              {{ checking ? "检测中..." : "检测敏感词" }}
+            </button>
+            <span v-if="sensitiveResult" class="sensitive-result" :class="sensitiveResult.count > 0 ? 'warn' : 'ok'">
+              <template v-if="sensitiveResult.count > 0">
+                命中 {{ sensitiveResult.count }} 个：{{ sensitiveResult.hits.join("、") }}
+              </template>
+              <template v-else>未命中敏感词</template>
+            </span>
+          </div>
           <label>
             媒体文件路径（逗号分隔）
             <input v-model="mediaPaths" placeholder="/path/to/video.mp4, /path/to/image.jpg" />
@@ -364,6 +394,25 @@ onUnmounted(stopAutoRefresh);
   align-items: center;
   gap: 12px;
   margin-top: 4px;
+}
+
+.sensitive-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: -4px;
+}
+
+.sensitive-result {
+  font-size: 12px;
+}
+
+.sensitive-result.warn {
+  color: var(--warning);
+}
+
+.sensitive-result.ok {
+  color: var(--success);
 }
 
 .message {

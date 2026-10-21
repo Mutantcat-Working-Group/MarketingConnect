@@ -5,6 +5,7 @@ import AccountSidebar from "./components/AccountSidebar.vue";
 import AccountWorkspace from "./components/AccountWorkspace.vue";
 import SmsSettings from "./components/SmsSettings.vue";
 import CustomPlatforms from "./components/CustomPlatforms.vue";
+import BatchPublish from "./components/BatchPublish.vue";
 
 const accounts = ref<api.Account[]>([]);
 const openTabs = ref<string[]>([]);
@@ -13,6 +14,7 @@ const engine = ref<api.EngineStatus>({ instances: [], count: 0 });
 const engineLoading = ref(false);
 const logs = ref<api.EventLog[]>([]);
 const showSettings = ref(false);
+const showBatchPublish = ref(false);
 
 const engineRunning = computed(() => engine.value.count > 0);
 const directInstance = computed(
@@ -93,6 +95,13 @@ onMounted(async () => {
           {{ engineRunning ? `引擎运行中 (${engine.count})` : "引擎未启动" }}
         </span>
         <span v-if="directInstance" class="engine-port">:{{ directInstance.port }}</span>
+        <button
+          class="batch-btn"
+          title="批量发布到多个账号"
+          @click="showBatchPublish = true"
+        >
+          批量发布
+        </button>
         <button class="settings-btn" title="短信提醒设置" @click="showSettings = true">
           ⚙
         </button>
@@ -152,6 +161,13 @@ onMounted(async () => {
         </footer>
       </div>
     </div>
+
+    <!-- 批量发布弹层 -->
+    <BatchPublish
+      v-if="showBatchPublish"
+      :accounts="accounts"
+      @close="showBatchPublish = false"
+    />
 
     <!-- 设置弹层 -->
     <div v-if="showSettings" class="modal-overlay" @click.self="showSettings = false">
@@ -391,5 +407,19 @@ onMounted(async () => {
   padding: 5px 9px;
   font-size: 14px;
   line-height: 1;
+}
+
+.batch-btn {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.batch-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  background: var(--accent);
 }
 </style>

@@ -10,6 +10,7 @@ export interface Account {
   name: string;
   username: string;
   proxy_url: string | null;
+  group_name: string | null;
   status: AccountStatus;
   last_check_at: number | null;
   created_at: number;
@@ -23,6 +24,7 @@ export interface NewAccount {
   username: string;
   password?: string;
   proxy_url?: string;
+  group_name?: string;
 }
 
 /** 发布任务 */
@@ -117,6 +119,22 @@ export const createPublishTask = (params: {
 export const listPublishTasks = (accountId: string) =>
   invoke<PublishTask[]>("list_publish_tasks", { accountId });
 
+/** 批量发布单账号结果 */
+export interface BatchPublishResult {
+  account_id: string;
+  account_name: string | null;
+  success: boolean;
+  error: string | null;
+}
+
+/** 批量发布：同一内容发布到多个账号 */
+export const batchPublish = (params: {
+  account_ids: string[];
+  title?: string;
+  content: string;
+  media_paths?: string;
+}) => invoke<BatchPublishResult[]>("batch_publish", params);
+
 // ---------- 日志与平台 ----------
 
 export const recentLogs = (limit?: number) =>
@@ -179,3 +197,16 @@ export const createCustomPlatform = (params: {
 
 export const deleteCustomPlatform = (id: string) =>
   invoke<void>("delete_custom_platform", { id });
+
+// ---------- 敏感词检测 ----------
+
+/** 敏感词检测结果 */
+export interface SensitiveCheckResult {
+  hits: string[];
+  count: number;
+  word_count: number;
+}
+
+/** 检测文本中的敏感词 */
+export const checkSensitiveWords = (text: string) =>
+  invoke<SensitiveCheckResult>("check_sensitive_words", { text });

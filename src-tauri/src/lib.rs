@@ -10,6 +10,7 @@ mod platforms;
 mod scheduler;
 mod session;
 mod session_monitor;
+mod sensitive_words;
 mod sms;
 
 use db::Db;
@@ -83,6 +84,7 @@ pub fn run() {
             accounts::save_account_cookies,
             accounts::capture_screenshot,
             accounts::create_publish_task,
+            accounts::batch_publish,
             accounts::list_publish_tasks,
             accounts::recent_logs,
             accounts::list_platforms,
@@ -92,6 +94,7 @@ pub fn run() {
             accounts::list_custom_platforms,
             accounts::create_custom_platform,
             accounts::delete_custom_platform,
+            accounts::check_sensitive_words,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

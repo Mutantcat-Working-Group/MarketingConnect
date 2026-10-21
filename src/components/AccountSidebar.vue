@@ -24,21 +24,19 @@ const form = ref<api.NewAccount>({
   username: "",
   password: "",
   proxy_url: "",
+  group_name: "",
 });
 
 const grouped = computed(() => {
   const map = new Map<string, api.Account[]>();
   for (const a of props.accounts) {
-    const list = map.get(a.platform) ?? [];
+    const key = a.group_name?.trim() || "未分组";
+    const list = map.get(key) ?? [];
     list.push(a);
-    map.set(a.platform, list);
+    map.set(key, list);
   }
   return map;
 });
-
-function platformName(id: string): string {
-  return platforms.value.find((p) => p.id === id)?.name ?? id;
-}
 
 async function loadPlatforms() {
   platforms.value = await api.listPlatforms();
@@ -56,8 +54,9 @@ async function submit() {
       username: form.value.username.trim(),
       password: form.value.password || undefined,
       proxy_url: form.value.proxy_url || undefined,
+      group_name: form.value.group_name?.trim() || undefined,
     });
-    form.value = { platform: form.value.platform, name: "", username: "", password: "", proxy_url: "" };
+    form.value = { platform: form.value.platform, name: "", username: "", password: "", proxy_url: "", group_name: "" };
     showForm.value = false;
     emit("refresh");
   } finally {
@@ -92,6 +91,7 @@ loadPlatforms();
       <input v-model="form.username" placeholder="登录账号（手机号/用户名）" />
       <input v-model="form.password" type="password" placeholder="登录密码（加密存储）" />
       <input v-model="form.proxy_url" placeholder="代理地址（可选，如 socks5://...）" />
+      <input v-model="form.group_name" placeholder="分组（可选，如：抖音矩阵A组）" />
       <button class="primary" :disabled="saving" @click="submit">
         {{ saving ? "保存中..." : "保存账号" }}
       </button>
@@ -101,8 +101,11 @@ loadPlatforms();
     <div class="account-list">
       <div v-if="accounts.length === 0" class="empty">暂无账号，点击「+ 新增」添加</div>
 
-      <template v-for="[platform, list] in grouped" :key="platform">
-        <div class="platform-group">{{ platformName(platform) }}</div>
+      <template v-for="[group, list] in grouped" :key="group">
+        <div class="platform-group">
+          <span>{{ group }}</span>
+          <span class="group-count">{{ list.length }}</span>
+        </div>
         <div
           v-for="a in list"
           :key="a.id"
@@ -167,12 +170,21 @@ loadPlatforms();
 }
 
 .platform-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 10px 8px 6px;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.8px;
+}
+
+.group-count {
+  font-weight: 400;
+  color: var(--text-muted);
+  opacity: 0.7;
 }
 
 .account-item {

@@ -45,6 +45,7 @@ pub struct Account {
     pub name: String,
     pub username: String,
     pub proxy_url: Option<String>,
+    pub group_name: Option<String>,
     pub status: AccountStatus,
     pub last_check_at: Option<i64>,
     pub created_at: i64,
@@ -59,6 +60,7 @@ pub struct NewAccount {
     pub username: String,
     pub password: Option<String>,
     pub proxy_url: Option<String>,
+    pub group_name: Option<String>,
 }
 
 /// 发布任务
@@ -122,6 +124,7 @@ impl Db {
                 username TEXT NOT NULL,
                 password_enc BLOB,
                 proxy_url TEXT,
+                group_name TEXT,
                 cookies_enc BLOB,
                 status TEXT NOT NULL DEFAULT 'offline',
                 last_check_at INTEGER,
@@ -175,6 +178,10 @@ impl Db {
             ",
         )
         .context("数据库迁移失败")?;
+
+        // 增量迁移：为已有数据库补充 group_name 列（已存在则忽略错误）
+        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN group_name TEXT", []);
+
         Ok(())
     }
 
@@ -192,8 +199,8 @@ impl Db {
         };
 
         conn.execute(
-            "INSERT INTO accounts (id, platform, name, username, password_enc, proxy_url, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'offline', ?7, ?7)",
+            "INSERT INTO accounts (id, platform, name, username, password_enc, proxy_url, group_name, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'offline', ?8, ?8)",
             params![
                 id,
                 input.platform,
@@ -201,6 +208,7 @@ impl Db {
                 input.username,
                 password_enc,
                 input.proxy_url,
+                input.group_name,
                 now
             ],
         )
@@ -212,6 +220,7 @@ impl Db {
             name: input.name.clone(),
             username: input.username.clone(),
             proxy_url: input.proxy_url.clone(),
+            group_name: input.group_name.clone(),
             status: AccountStatus::Offline,
             last_check_at: None,
             created_at: now,
@@ -223,7 +232,7 @@ impl Db {
     pub fn list_accounts(&self) -> Result<Vec<Account>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, platform, name, username, proxy_url, status, last_check_at, created_at, updated_at
+            "SELECT id, platform, name, username, proxy_url, group_name, status, last_check_at, created_at, updated_at
              FROM accounts ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -233,10 +242,11 @@ impl Db {
                 name: row.get(2)?,
                 username: row.get(3)?,
                 proxy_url: row.get(4)?,
-                status: AccountStatus::from_str(&row.get::<_, String>(5)?),
-                last_check_at: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                group_name: row.get(5)?,
+                status: AccountStatus::from_str(&row.get::<_, String>(6)?),
+                last_check_at: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
             })
         })?;
         let mut accounts = Vec::new();
