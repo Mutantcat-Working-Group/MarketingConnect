@@ -152,6 +152,12 @@ impl Db {
                 created_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tasks_account ON publish_tasks(account_id);
             CREATE INDEX IF NOT EXISTS idx_logs_account ON event_logs(account_id);
             ",
@@ -407,5 +413,75 @@ impl Db {
             logs.push(row?);
         }
         Ok(logs)
+    }
+
+    // ---------- 设置（键值对） ----------
+
+    /// 读取设置项
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let value = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    /// 写入设置项（upsert）
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+            params![key, value, now],
+        )?;
+        Ok(())
+    }
+
+    // ---------- 短信配置 ----------
+
+    /// 保存短信配置（AccessKeySecret 加密存储）
+    pub fn save_sms_config(&self, config: &crate::sms::SmsConfig) -> Result<()> {
+        // 非敏感字段明文 JSON
+        let plain = serde_json::json!({
+            "access_key_id": config.access_key_id,
+            "sign_name": config.sign_name,
+            "template_code": config.template_code,
+            "phone_numbers": config.phone_numbers,
+        });
+        self.set_setting("sms_config", &plain.to_string())?;
+
+        // 敏感字段加密存储（hex 编码）
+        let enc = crate::crypto::encrypt_str(&config.access_key_secret)?;
+        self.set_setting("sms_secret_enc", &hex::encode(enc))?;
+        Ok(())
+    }
+
+    /// 读取短信配置（解密 AccessKeySecret）
+    pub fn get_sms_config(&self) -> Result<Option<crate::sms::SmsConfig>> {
+        let Some(json) = self.get_setting("sms_config")? else {
+            return Ok(None);
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&json).context("短信配置 JSON 解析失败")?;
+
+        // 解密密钥（失败时返回空，由 is_configured 判定）
+        let secret = self
+            .get_setting("sms_secret_enc")?
+            .and_then(|hex_str| hex::decode(hex_str).ok())
+            .and_then(|bytes| crate::crypto::decrypt_str(&bytes).ok())
+            .unwrap_or_default();
+
+        Ok(Some(crate::sms::SmsConfig {
+            access_key_id: v["access_key_id"].as_str().unwrap_or("").to_string(),
+            access_key_secret: secret,
+            sign_name: v["sign_name"].as_str().unwrap_or("").to_string(),
+            template_code: v["template_code"].as_str().unwrap_or("").to_string(),
+            phone_numbers: v["phone_numbers"].as_str().unwrap_or("").to_string(),
+        }))
     }
 }

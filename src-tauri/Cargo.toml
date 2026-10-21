@@ -36,6 +36,12 @@ uuid = { version = "1", features = ["v4"] }
 hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 短信提醒（阿里云短信 API）
+reqwest = { version = "0.12", features = ["json"] }
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
+percent-encoding = "2"
 
 # 钥匙串后端按目标平台分别启用（keyring 各平台后端互不兼容，必须分开声明）
 [target.'cfg(target_os = "macos")'.dependencies]

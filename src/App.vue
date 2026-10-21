@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import * as api from "./api";
 import AccountSidebar from "./components/AccountSidebar.vue";
 import AccountWorkspace from "./components/AccountWorkspace.vue";
+import SmsSettings from "./components/SmsSettings.vue";
 
 const accounts = ref<api.Account[]>([]);
 const openTabs = ref<string[]>([]);
@@ -10,6 +11,7 @@ const activeTab = ref<string | null>(null);
 const engine = ref<api.EngineStatus>({ instances: [], count: 0 });
 const engineLoading = ref(false);
 const logs = ref<api.EventLog[]>([]);
+const showSettings = ref(false);
 
 const engineRunning = computed(() => engine.value.count > 0);
 const directInstance = computed(
@@ -90,6 +92,9 @@ onMounted(async () => {
           {{ engineRunning ? `引擎运行中 (${engine.count})` : "引擎未启动" }}
         </span>
         <span v-if="directInstance" class="engine-port">:{{ directInstance.port }}</span>
+        <button class="settings-btn" title="短信提醒设置" @click="showSettings = true">
+          ⚙
+        </button>
         <button :disabled="engineLoading" @click="toggleEngine">
           {{ engineLoading ? "..." : engineRunning ? "停止引擎" : "启动引擎" }}
         </button>
@@ -144,6 +149,19 @@ onMounted(async () => {
             [{{ log.event }}] {{ log.detail || "" }}
           </span>
         </footer>
+      </div>
+    </div>
+
+    <!-- 设置弹层 -->
+    <div v-if="showSettings" class="modal-overlay" @click.self="showSettings = false">
+      <div class="modal">
+        <div class="modal-header">
+          <span>设置</span>
+          <button class="modal-close" @click="showSettings = false">×</button>
+        </div>
+        <div class="modal-body">
+          <SmsSettings />
+        </div>
       </div>
     </div>
   </div>
@@ -308,5 +326,61 @@ onMounted(async () => {
 
 .log-item.warn {
   color: var(--warning);
+}
+
+/* 设置弹层 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 640px;
+  max-width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.modal-close {
+  border: none;
+  background: none;
+  font-size: 18px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+}
+
+.modal-body {
+  overflow-y: auto;
+}
+
+.settings-btn {
+  padding: 5px 9px;
+  font-size: 14px;
+  line-height: 1;
 }
 </style>

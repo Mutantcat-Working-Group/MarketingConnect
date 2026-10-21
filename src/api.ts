@@ -120,3 +120,28 @@ export const recentLogs = (limit?: number) =>
   invoke<EventLog[]>("recent_logs", { limit });
 
 export const listPlatforms = () => invoke<PlatformInfo[]>("list_platforms");
+
+// ---------- 短信配置 ----------
+
+/** 短信配置（密钥脱敏） */
+export interface SmsConfigView {
+  access_key_id: string;
+  access_key_secret_masked: string;
+  has_secret: boolean;
+  sign_name: string;
+  template_code: string;
+  phone_numbers: string;
+  configured: boolean;
+}
+
+export const getSmsConfig = () => invoke<SmsConfigView>("get_sms_config");
+
+export const saveSmsConfig = (params: {
+  access_key_id: string;
+  access_key_secret: string;
+  sign_name: string;
+  template_code: string;
+  phone_numbers: string;
+}) => invoke<void>("save_sms_config", params);
+
+export const testSms = () => invoke<string>("test_sms");

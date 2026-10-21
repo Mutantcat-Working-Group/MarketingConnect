@@ -137,7 +137,7 @@ pub async fn check_account_session(
         Some(if valid { "会话有效" } else { "会话已掉线" }),
     );
 
-    // 掉号时发送系统通知
+    // 掉号时发送系统通知 + 短信提醒
     if !valid {
         let _ = app
             .notification()
@@ -148,6 +148,24 @@ pub async fn check_account_session(
                 account.name, account.platform
             ))
             .show();
+
+        // 短信提醒（配置了才发送，失败不影响主流程）
+        if let Ok(Some(sms_config)) = db.get_sms_config() {
+            if sms_config.is_configured() {
+                let name = account.name.clone();
+                let platform = account.platform.clone();
+                tauri::async_runtime::spawn(async move {
+                    match crate::sms::send_offline_alert(&sms_config, &name, &platform).await {
+                        Ok(()) => {
+                            tracing::info!("掉号短信已发送（账号 {}）", name);
+                        }
+                        Err(e) => {
+                            tracing::warn!("掉号短信发送失败: {}", e);
+                        }
+                    }
+                });
+            }
+        }
     }
 
     Ok(valid)
@@ -242,6 +260,97 @@ pub fn list_platforms() -> Result<Vec<serde_json::Value>, String> {
             "name": a.display_name(),
         }))
         .collect())
+}
+
+// ---------- 短信配置 ----------
+
+/// 获取短信配置（密钥脱敏返回）
+#[tauri::command]
+pub fn get_sms_config(db: State<'_, Db>) -> Result<serde_json::Value, String> {
+    let config = db.get_sms_config().map_err(|e| e.to_string())?;
+    match config {
+        Some(c) => {
+            // 密钥脱敏：只显示前 4 位
+            let masked = if c.access_key_secret.len() > 4 {
+                format!("{}****", &c.access_key_secret[..4])
+            } else if c.access_key_secret.is_empty() {
+                String::new()
+            } else {
+                "****".to_string()
+            };
+            Ok(serde_json::json!({
+                "access_key_id": c.access_key_id,
+                "access_key_secret_masked": masked,
+                "has_secret": !c.access_key_secret.is_empty(),
+                "sign_name": c.sign_name,
+                "template_code": c.template_code,
+                "phone_numbers": c.phone_numbers,
+                "configured": c.is_configured(),
+            }))
+        }
+        None => Ok(serde_json::json!({
+            "access_key_id": "",
+            "access_key_secret_masked": "",
+            "has_secret": false,
+            "sign_name": "",
+            "template_code": "",
+            "phone_numbers": "",
+            "configured": false,
+        })),
+    }
+}
+
+/// 保存短信配置
+///
+/// secret 为空字符串时保留原有密钥（用于前端只更新非敏感字段）。
+#[tauri::command]
+pub fn save_sms_config(
+    db: State<'_, Db>,
+    access_key_id: String,
+    access_key_secret: String,
+    sign_name: String,
+    template_code: String,
+    phone_numbers: String,
+) -> Result<(), String> {
+    // 读取现有配置以保留未提供的密钥
+    let existing = db.get_sms_config().map_err(|e| e.to_string())?;
+    let secret = if access_key_secret.is_empty() {
+        existing.map(|c| c.access_key_secret).unwrap_or_default()
+    } else {
+        access_key_secret
+    };
+
+    let config = crate::sms::SmsConfig {
+        access_key_id,
+        access_key_secret: secret,
+        sign_name,
+        template_code,
+        phone_numbers,
+    };
+    db.save_sms_config(&config).map_err(|e| e.to_string())
+}
+
+/// 发送测试短信
+#[tauri::command]
+pub async fn test_sms(db: State<'_, Db>) -> Result<String, String> {
+    let config = db
+        .get_sms_config()
+        .map_err(|e| e.to_string())?
+        .ok_or("短信配置不存在，请先保存配置")?;
+
+    if !config.is_configured() {
+        return Err("短信配置不完整，请检查所有必填项".into());
+    }
+
+    crate::sms::send_sms(
+        &config,
+        &[("account", "测试"), ("platform", "营销通")],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let _ = db.log_event(None, "info", "sms_test", Some("测试短信发送成功"));
+    Ok("测试短信已发送".into())
 }
 
 /// 从数据库查找账号

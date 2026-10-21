@@ -9,15 +9,13 @@ mod obscura;
 mod platforms;
 mod scheduler;
 mod session;
+mod sms;
 
 use db::Db;
 use obscura::{CdpState, ObscuraManager};
 use session::SessionRegistry;
 use std::sync::Arc;
 use tauri::Manager;
-
-/// Obscura CDP 服务端口
-const OBSCURA_PORT: u16 = 9222;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -43,8 +41,8 @@ pub fn run() {
             let db = Db::open(&db_path).expect("数据库初始化失败");
             app.manage(db);
 
-            // Obscura 引擎管理器
-            app.manage(ObscuraManager::new(OBSCURA_PORT));
+            // Obscura 引擎管理器（多实例：按代理分组）
+            app.manage(ObscuraManager::new());
 
             // CDP 连接状态与账号会话注册表
             app.manage(CdpState::new());
@@ -80,6 +78,9 @@ pub fn run() {
             accounts::list_publish_tasks,
             accounts::recent_logs,
             accounts::list_platforms,
+            accounts::get_sms_config,
+            accounts::save_sms_config,
+            accounts::test_sms,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

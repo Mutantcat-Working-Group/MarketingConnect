@@ -81,3 +81,31 @@ Obscura `--proxy` 为实例级参数。每账号独立代理方案：按代理�
 4. 前端：选项卡式账号工作台
 5. 调度 + 通知 + 加密
 6. 平台适配器：抖音优先
+
+---
+
+## Spike 验证记录（2026-10-21）
+
+### Spike #1：抖音创作者平台渲染 —— ✅ 通过（带注意事项）
+
+验证方式：`obscura fetch https://creator.douyin.com/creator-micro/home --stealth --dump text`
+
+结果：
+- ✅ 页面完整渲染，输出包含「抖音创作者的一站式创作与服务平台」
+- ✅ 登录入口可见：「我是创作者」「我是MCN机构」
+- ✅ JS 完整执行：passport SDK 运行并计算了 a_bogus/sign/fp 等风控参数
+- ⚠️ 风控 challenge 接口（/passport/web/challenge/）返回 error_code:4「参数错误」
+  —— 自动环境预检未通过，但不影响页面渲染与人工登录流程
+
+结论：Obscura 可渲染抖音创作者平台重 SPA。「用户手动登录一次 +
+加密 cookie 持久化」的架构可行。发布流程（publish）待登录态下验证。
+
+### 架构修正（依据 obscura 官方文档）
+
+- `--proxy` 为进程级参数 → 每账号独立代理 = 多实例方案（已实现）
+- `--storage-dir` 同进程多 context 共享磁盘存储 → 不使用，
+  隔离由内存 context + 加密 CDP cookie 持久化保证
+- `OBSCURA_ROTATE_PROFILE=1` 可让每个 context 随机分配真实浏览器
+  profile（UA/platform/userAgentData 内部一致）——矩阵营销指纹差异的关键能力
+- `OBSCURA_TIMEZONE` / `OBSCURA_GEOLOCATION` 需与代理出口地区一致
+- stealth 边界：不防 Cloudflare 交互挑战 / 验证码 / TCP/IP 被动指纹
