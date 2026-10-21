@@ -83,8 +83,17 @@ export const engineStatus = () => invoke<EngineStatus>("engine_status");
 
 // ---------- 会话检测 ----------
 
+export const openAccountSession = (accountId: string) =>
+  invoke<void>("open_account_session", { accountId });
+
+export const closeAccountSession = (accountId: string) =>
+  invoke<void>("close_account_session", { accountId });
+
 export const checkAccountSession = (accountId: string) =>
   invoke<boolean>("check_account_session", { accountId });
+
+export const saveAccountCookies = (accountId: string) =>
+  invoke<number>("save_account_cookies", { accountId });
 
 // ---------- 发布任务 ----------
 

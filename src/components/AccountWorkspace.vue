@@ -8,6 +8,11 @@ const emit = defineEmits<{ close: [id: string] }>();
 const tasks = ref<api.PublishTask[]>([]);
 const loading = ref(false);
 
+// 会话状态
+const sessionOpen = ref(false);
+const sessionChecking = ref(false);
+const sessionMessage = ref("");
+
 // 发布表单
 const title = ref("");
 const content = ref("");
@@ -22,6 +27,51 @@ async function loadTasks() {
     tasks.value = await api.listPublishTasks(props.accountId);
   } finally {
     loading.value = false;
+  }
+}
+
+async function openSession() {
+  sessionMessage.value = "";
+  try {
+    await api.openAccountSession(props.accountId);
+    sessionOpen.value = true;
+    sessionMessage.value = "会话已打开";
+  } catch (e) {
+    sessionMessage.value = `打开失败: ${e}`;
+  }
+}
+
+async function closeSession() {
+  try {
+    await api.closeAccountSession(props.accountId);
+    sessionOpen.value = false;
+    sessionMessage.value = "会话已关闭";
+  } catch (e) {
+    sessionMessage.value = `关闭失败: ${e}`;
+  }
+}
+
+async function checkSession() {
+  sessionChecking.value = true;
+  sessionMessage.value = "";
+  try {
+    const valid = await api.checkAccountSession(props.accountId);
+    sessionOpen.value = true;
+    sessionMessage.value = valid ? "会话有效" : "会话已掉线，请重新登录";
+  } catch (e) {
+    sessionMessage.value = `检测失败: ${e}`;
+  } finally {
+    sessionChecking.value = false;
+  }
+}
+
+async function saveCookies() {
+  sessionMessage.value = "";
+  try {
+    const count = await api.saveAccountCookies(props.accountId);
+    sessionMessage.value = `已保存 ${count} 个 cookie（加密存储）`;
+  } catch (e) {
+    sessionMessage.value = `保存失败: ${e}`;
   }
 }
 
@@ -64,6 +114,28 @@ onMounted(loadTasks);
     </div>
 
     <div class="workspace-body">
+      <!-- 会话管理 -->
+      <section class="panel">
+        <h3>登录会话</h3>
+        <div class="session-bar">
+          <span class="badge" :class="sessionOpen ? 'online' : 'offline'">
+            {{ sessionOpen ? "会话已打开" : "会话未打开" }}
+          </span>
+          <div class="session-actions">
+            <button v-if="!sessionOpen" class="primary" @click="openSession">打开会话</button>
+            <template v-else>
+              <button :disabled="sessionChecking" @click="checkSession">
+                {{ sessionChecking ? "检测中..." : "检测会话" }}
+              </button>
+              <button @click="saveCookies">保存 Cookie</button>
+              <button class="danger" @click="closeSession">关闭会话</button>
+            </template>
+          </div>
+        </div>
+        <p v-if="sessionMessage" class="message">{{ sessionMessage }}</p>
+      </section>
+
+      <!-- 新建发布任务 -->
       <section class="panel">
         <h3>新建发布任务</h3>
         <div class="form">
@@ -92,6 +164,7 @@ onMounted(loadTasks);
         </div>
       </section>
 
+      <!-- 任务列表 -->
       <section class="panel">
         <h3>任务列表</h3>
         <div v-if="loading" class="empty">加载中...</div>
@@ -168,6 +241,18 @@ onMounted(loadTasks);
   letter-spacing: 0.5px;
 }
 
+.session-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.session-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .form {
   display: flex;
   flex-direction: column;
@@ -192,6 +277,7 @@ onMounted(loadTasks);
 .message {
   font-size: 12px;
   color: var(--text-secondary);
+  margin-top: 10px;
 }
 
 .task-table {

@@ -8,9 +8,11 @@ mod db;
 mod obscura;
 mod platforms;
 mod scheduler;
+mod session;
 
 use db::Db;
-use obscura::ObscuraManager;
+use obscura::{CdpState, ObscuraManager};
+use session::SessionRegistry;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -43,6 +45,10 @@ pub fn run() {
             // Obscura 引擎管理器
             app.manage(ObscuraManager::new(OBSCURA_PORT));
 
+            // CDP 连接状态与账号会话注册表
+            app.manage(CdpState::new());
+            app.manage(SessionRegistry::new());
+
             // 定时调度器（后台启动）
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -65,7 +71,10 @@ pub fn run() {
             accounts::start_engine,
             accounts::stop_engine,
             accounts::engine_status,
+            accounts::open_account_session,
+            accounts::close_account_session,
             accounts::check_account_session,
+            accounts::save_account_cookies,
             accounts::create_publish_task,
             accounts::list_publish_tasks,
             accounts::recent_logs,

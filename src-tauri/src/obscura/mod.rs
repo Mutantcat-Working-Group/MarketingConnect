@@ -3,6 +3,10 @@
 //! 通过 tauri-plugin-shell 启动 `obscura serve` CDP 服务进程，
 //! 提供健康检查与生命周期管理。
 
+mod client;
+
+pub use client::{CdpBrowser, CdpState};
+
 use anyhow::{Context, Result};
 use std::net::TcpStream;
 use std::sync::Mutex;
