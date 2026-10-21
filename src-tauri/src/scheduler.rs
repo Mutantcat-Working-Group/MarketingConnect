@@ -125,7 +125,7 @@ async fn execute_publish(app: &AppHandle, task_id: &str, account_id: &str) {
     };
 
     // 4. 调用平台适配器发布
-    let adapter = match platforms::find_adapter(&account.platform) {
+    let adapter = match platforms::find_adapter(&account.platform, Some(&db)) {
         Some(a) => a,
         None => {
             fail_task(&db, task_id, &format!("不支持的平台: {}", account.platform));

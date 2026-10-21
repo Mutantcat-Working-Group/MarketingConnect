@@ -82,6 +82,9 @@ pub fn run() {
             accounts::get_sms_config,
             accounts::save_sms_config,
             accounts::test_sms,
+            accounts::list_custom_platforms,
+            accounts::create_custom_platform,
+            accounts::delete_custom_platform,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

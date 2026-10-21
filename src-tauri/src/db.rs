@@ -158,6 +158,18 @@ impl Db {
                 updated_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS custom_platforms (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                creator_url TEXT NOT NULL,
+                publish_url TEXT NOT NULL,
+                title_selector TEXT,
+                content_selector TEXT,
+                submit_selector TEXT,
+                logged_in_pattern TEXT,
+                created_at INTEGER NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tasks_account ON publish_tasks(account_id);
             CREATE INDEX IF NOT EXISTS idx_logs_account ON event_logs(account_id);
             ",
@@ -483,5 +495,76 @@ impl Db {
             template_code: v["template_code"].as_str().unwrap_or("").to_string(),
             phone_numbers: v["phone_numbers"].as_str().unwrap_or("").to_string(),
         }))
+    }
+
+    // ---------- 自定义平台 ----------
+
+    /// 列出所有自定义平台
+    pub fn list_custom_platforms(&self) -> Result<Vec<crate::platforms::CustomPlatform>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, creator_url, publish_url, title_selector,
+                    content_selector, submit_selector, logged_in_pattern
+             FROM custom_platforms ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(crate::platforms::CustomPlatform {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                creator_url: row.get(2)?,
+                publish_url: row.get(3)?,
+                title_selector: row.get(4)?,
+                content_selector: row.get(5)?,
+                submit_selector: row.get(6)?,
+                logged_in_pattern: row.get(7)?,
+            })
+        })?;
+        let mut platforms = Vec::new();
+        for row in rows {
+            platforms.push(row?);
+        }
+        Ok(platforms)
+    }
+
+    /// 新增自定义平台
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_custom_platform(
+        &self,
+        id: &str,
+        name: &str,
+        creator_url: &str,
+        publish_url: &str,
+        title_selector: Option<&str>,
+        content_selector: Option<&str>,
+        submit_selector: Option<&str>,
+        logged_in_pattern: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO custom_platforms
+                (id, name, creator_url, publish_url, title_selector,
+                 content_selector, submit_selector, logged_in_pattern, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                id,
+                name,
+                creator_url,
+                publish_url,
+                title_selector,
+                content_selector,
+                submit_selector,
+                logged_in_pattern,
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 删除自定义平台
+    pub fn delete_custom_platform(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM custom_platforms WHERE id = ?1", params![id])?;
+        Ok(())
     }
 }

@@ -55,7 +55,7 @@ impl SessionRegistry {
         let (port, browser) = resolve_browser(app, account).await?;
 
         // 2. 平台创作者首页 URL
-        let creator_url = platforms::find_adapter(&account.platform)
+        let creator_url = platforms::find_adapter(&account.platform, Some(db))
             .map(|a| a.creator_url().to_string())
             .unwrap_or_else(|| "about:blank".to_string());
 

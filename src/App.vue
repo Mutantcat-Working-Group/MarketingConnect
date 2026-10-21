@@ -4,6 +4,7 @@ import * as api from "./api";
 import AccountSidebar from "./components/AccountSidebar.vue";
 import AccountWorkspace from "./components/AccountWorkspace.vue";
 import SmsSettings from "./components/SmsSettings.vue";
+import CustomPlatforms from "./components/CustomPlatforms.vue";
 
 const accounts = ref<api.Account[]>([]);
 const openTabs = ref<string[]>([]);
@@ -161,6 +162,8 @@ onMounted(async () => {
         </div>
         <div class="modal-body">
           <SmsSettings />
+          <div class="modal-divider" />
+          <CustomPlatforms />
         </div>
       </div>
     </div>
@@ -376,6 +379,12 @@ onMounted(async () => {
 
 .modal-body {
   overflow-y: auto;
+}
+
+.modal-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
 }
 
 .settings-btn {

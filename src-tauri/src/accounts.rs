@@ -115,7 +115,7 @@ pub async fn check_account_session(
         .ok_or("会话打开失败")?;
 
     // 调用平台适配器检测会话
-    let valid = match crate::platforms::find_adapter(&account.platform) {
+    let valid = match crate::platforms::find_adapter(&account.platform, Some(&db)) {
         Some(adapter) => adapter
             .check_session(&page)
             .await
@@ -269,8 +269,8 @@ pub fn recent_logs(
 
 /// 获取支持的平台列表
 #[tauri::command]
-pub fn list_platforms() -> Result<Vec<serde_json::Value>, String> {
-    Ok(crate::platforms::all_adapters()
+pub fn list_platforms(db: State<'_, Db>) -> Result<Vec<serde_json::Value>, String> {
+    Ok(crate::platforms::all_adapters(Some(&db))
         .iter()
         .map(|a| serde_json::json!({
             "id": a.platform_id(),
@@ -369,6 +369,75 @@ pub async fn test_sms(db: State<'_, Db>) -> Result<String, String> {
 
     let _ = db.log_event(None, "info", "sms_test", Some("测试短信发送成功"));
     Ok("测试短信已发送".into())
+}
+
+// ---------- 自定义平台 ----------
+
+/// 列出自定义平台
+#[tauri::command]
+pub fn list_custom_platforms(
+    db: State<'_, Db>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let platforms = db.list_custom_platforms().map_err(|e| e.to_string())?;
+    Ok(platforms
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "name": p.name,
+                "creator_url": p.creator_url,
+                "publish_url": p.publish_url,
+                "title_selector": p.title_selector,
+                "content_selector": p.content_selector,
+                "submit_selector": p.submit_selector,
+                "logged_in_pattern": p.logged_in_pattern,
+            })
+        })
+        .collect())
+}
+
+/// 新增自定义平台
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn create_custom_platform(
+    db: State<'_, Db>,
+    id: String,
+    name: String,
+    creator_url: String,
+    publish_url: String,
+    title_selector: Option<String>,
+    content_selector: Option<String>,
+    submit_selector: Option<String>,
+    logged_in_pattern: Option<String>,
+) -> Result<(), String> {
+    // 简单校验：id 不能与内置平台冲突
+    if id == "douyin" {
+        return Err("平台 ID 不能与内置平台冲突".into());
+    }
+    db.create_custom_platform(
+        &id,
+        &name,
+        &creator_url,
+        &publish_url,
+        title_selector.as_deref(),
+        content_selector.as_deref(),
+        submit_selector.as_deref(),
+        logged_in_pattern.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = db.log_event(
+        None,
+        "info",
+        "custom_platform_created",
+        Some(&format!("自定义平台「{}」已创建", name)),
+    );
+    Ok(())
+}
+
+/// 删除自定义平台
+#[tauri::command]
+pub fn delete_custom_platform(db: State<'_, Db>, id: String) -> Result<(), String> {
+    db.delete_custom_platform(&id).map_err(|e| e.to_string())
 }
 
 /// 从数据库查找账号

@@ -148,3 +148,34 @@ export const saveSmsConfig = (params: {
 }) => invoke<void>("save_sms_config", params);
 
 export const testSms = () => invoke<string>("test_sms");
+
+// ---------- 自定义平台 ----------
+
+/** 自定义平台配置 */
+export interface CustomPlatform {
+  id: string;
+  name: string;
+  creator_url: string;
+  publish_url: string;
+  title_selector: string | null;
+  content_selector: string | null;
+  submit_selector: string | null;
+  logged_in_pattern: string | null;
+}
+
+export const listCustomPlatforms = () =>
+  invoke<CustomPlatform[]>("list_custom_platforms");
+
+export const createCustomPlatform = (params: {
+  id: string;
+  name: string;
+  creator_url: string;
+  publish_url: string;
+  title_selector?: string;
+  content_selector?: string;
+  submit_selector?: string;
+  logged_in_pattern?: string;
+}) => invoke<void>("create_custom_platform", params);
+
+export const deleteCustomPlatform = (id: string) =>
+  invoke<void>("delete_custom_platform", { id });
