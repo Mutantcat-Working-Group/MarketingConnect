@@ -8,6 +8,7 @@
     "opener:default",
     "shell:allow-spawn",
     "shell:allow-kill",
-    "shell:allow-stdin-write"
+    "shell:allow-stdin-write",
+    "notification:default"
   ]
 }

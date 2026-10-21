@@ -124,14 +124,17 @@ pub async fn close_account_session(
 /// 账号会话检测（掉号检测）
 ///
 /// 通过平台适配器的 check_session 判断会话是否有效，
-/// 并更新账号状态。
+/// 并更新账号状态；掉号时发送系统通知。
 #[tauri::command]
 pub async fn check_account_session(
+    app: tauri::AppHandle,
     db: State<'_, Db>,
     cdp: State<'_, CdpState>,
     sessions: State<'_, SessionRegistry>,
     account_id: String,
 ) -> Result<bool, String> {
+    use tauri_plugin_notification::NotificationExt;
+
     let browser = cdp
         .get()
         .await
@@ -178,6 +181,19 @@ pub async fn check_account_session(
         Some(if valid { "会话有效" } else { "会话已掉线" }),
     );
 
+    // 掉号时发送系统通知
+    if !valid {
+        let _ = app
+            .notification()
+            .builder()
+            .title("营销通 - 账号掉号提醒")
+            .body(&format!(
+                "账号「{}」（{}）登录已失效，请及时重新登录",
+                account.name, account.platform
+            ))
+            .show();
+    }
+
     Ok(valid)
 }
 
@@ -195,8 +211,11 @@ pub async fn save_account_cookies(
 }
 
 /// 创建发布任务
+///
+/// 若带 cron 表达式，自动注册到定时调度器。
 #[tauri::command]
 pub fn create_publish_task(
+    app: tauri::AppHandle,
     db: State<'_, Db>,
     account_id: String,
     title: Option<String>,
@@ -205,15 +224,38 @@ pub fn create_publish_task(
     cron_expr: Option<String>,
     scheduled_at: Option<i64>,
 ) -> Result<PublishTask, String> {
-    db.create_task(
-        &account_id,
-        title.as_deref(),
-        content.as_deref(),
-        media_paths.as_deref(),
-        cron_expr.as_deref(),
-        scheduled_at,
-    )
-    .map_err(|e| e.to_string())
+    let task = db
+        .create_task(
+            &account_id,
+            title.as_deref(),
+            content.as_deref(),
+            media_paths.as_deref(),
+            cron_expr.as_deref(),
+            scheduled_at,
+        )
+        .map_err(|e| e.to_string())?;
+
+    // 带 cron 表达式：注册定时作业
+    if let Some(cron) = task.cron_expr.clone() {
+        if let Some(state) = app.try_state::<Arc<crate::scheduler::PublishScheduler>>() {
+            let scheduler = state.inner().clone();
+            let app_clone = app.clone();
+            let task_id = task.id.clone();
+            let account_id = account_id.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = scheduler
+                    .add_job(app_clone, &cron, task_id, account_id)
+                    .await
+                {
+                    tracing::error!("注册定时任务失败: {}", e);
+                }
+            });
+        } else {
+            tracing::warn!("调度器尚未就绪，任务 {} 未注册定时", task.id);
+        }
+    }
+
+    Ok(task)
 }
 
 /// 列出账号的发布任务
