@@ -6,6 +6,7 @@
 use crate::db::{Account, AccountStatus, Db, NewAccount, PublishTask};
 use crate::obscura::ObscuraManager;
 use crate::session::SessionRegistry;
+use base64::Engine;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
