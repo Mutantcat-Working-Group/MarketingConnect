@@ -48,12 +48,31 @@
 └──────────────────────────────────────────────┘
 ```
 
+## 支持平台
+
+| 平台 | 架构 | 状态 |
+|---|---|---|
+| macOS | Apple Silicon (arm64) / Intel (x86_64) | ✅ |
+| Windows | x86_64 | ✅ |
+| Linux | x86_64 / arm64 | ✅ |
+
 ## 开发环境要求
 
+通用：
 - Node.js 20+
 - pnpm 9+
 - Rust 1.75+
-- （macOS）Xcode Command Line Tools
+
+平台前置依赖：
+- **macOS**：Xcode Command Line Tools（`xcode-select --install`）
+- **Windows**：
+  - Microsoft C++ 生成工具（Visual Studio Build Tools，Rust 编译需要）
+  - WebView2 Runtime（Win10/11 通常已预装；[微软官方下载](https://developer.microsoft.com/microsoft-edge/webview2/)）
+- **Linux**（Ubuntu/Debian）：
+  ```bash
+  sudo apt-get install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf build-essential
+  ```
+  > Obscura 的 Linux 二进制要求 glibc 2.35+（Ubuntu 22.04 及以上）
 
 ## 快速开始
 
@@ -62,10 +81,24 @@
 pnpm install
 
 # 2. 下载 Obscura sidecar 二进制（按当前平台自动选择）
+#    macOS / Linux:
 ./scripts/download-obscura.sh
+#    Windows (PowerShell):
+.\scripts\download-obscura.ps1
 
 # 3. 启动开发模式
 pnpm tauri dev
+```
+
+## 跨平台构建
+
+推送到 `main` 或打 `v*` 标签时，GitHub Actions 会自动构建三个平台的安装包
+（macOS dmg / Windows msi / Linux deb+AppImage），以 Draft Release 形式产出。
+
+本地手动构建某个平台：
+```bash
+pnpm tauri build                          # 当前平台
+pnpm tauri build --target aarch64-apple-darwin   # macOS Apple Silicon
 ```
 
 ## 项目结构

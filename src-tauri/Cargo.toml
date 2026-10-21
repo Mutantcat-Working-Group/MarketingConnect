@@ -25,7 +25,6 @@ chromiumoxide = "0.7"
 rusqlite = { version = "0.32", features = ["bundled"] }
 aes-gcm = "0.10"
 rand = "0.8"
-keyring = { version = "3", features = ["apple-native"] }
 tokio-cron-scheduler = "0.13"
 chrono = "0.4"
 anyhow = "1"
@@ -36,6 +35,16 @@ uuid = { version = "1", features = ["v4"] }
 hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 钥匙串后端按目标平台分别启用（keyring 各平台后端互不兼容，必须分开声明）
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
