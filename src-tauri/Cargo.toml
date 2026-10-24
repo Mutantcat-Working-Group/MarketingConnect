@@ -1,6 +1,6 @@
 [package]
 name = "marketing-connect"
-version = "0.1.0"
+version = "1.0.20261024"
 description = "营销通 - 多平台矩阵营销号统一管理与发布工具"
 authors = ["Mutantcat"]
 edition = "2024"
