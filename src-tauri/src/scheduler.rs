@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 定时发布调度器
 //!
 //! 基于 tokio-cron-scheduler：

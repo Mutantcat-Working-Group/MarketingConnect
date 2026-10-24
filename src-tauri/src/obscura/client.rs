@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! CDP 客户端封装（基于 chromiumoxide 0.7）
 //!
 //! 连接到 Obscura 的 CDP 服务，为每个账号创建独立的

@@ -171,4 +171,14 @@ pnpm tauri build --target aarch64-apple-darwin   # macOS Apple Silicon
 
 ## License
 
-私有项目 © Mutantcat
+本项目采用 [GNU General Public License v3.0](LICENSE)（GPL-3.0）开源。
+
+Copyright (C) 2026 Mutantcat
+
+这意味着：
+- ✅ 可自由使用、修改、分发本项目
+- ✅ 修改后分发时必须同样以 GPL-3.0 开源并提供源码
+- ❌ 不得将本项目（或其修改版）闭源集成到专有软件中分发
+
+依赖组件协议：[Obscura](https://github.com/h4ckf0r0day/obscura)（Apache-2.0，与 GPL-3.0 兼容）、
+Tauri（Apache-2.0 / MIT）。完整第三方协议见各依赖清单。

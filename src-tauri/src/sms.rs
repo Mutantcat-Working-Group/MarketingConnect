@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 短信提醒模块（阿里云短信服务）
 //!
 //! 掉号时通过阿里云短信 API（dysmsapi.aliyuncs.com）向配置的

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 账号会话生命周期管理
 //!
 //! 每个账号对应一个独立的 Obscura BrowserContext：

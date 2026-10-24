@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Mutantcat -->
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import * as api from "../api";

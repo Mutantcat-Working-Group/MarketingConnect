@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 敏感词检测
 //!
 //! 内置常见违规词库（广告法极限词、医疗违规宣称、金融违规话术），

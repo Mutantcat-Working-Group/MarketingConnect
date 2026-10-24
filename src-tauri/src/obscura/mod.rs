@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! Obscura sidecar 进程管理（多实例）
 //!
 //! Obscura 的 `--proxy` 是进程级参数，因此每账号独立代理的方案是

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "营销通 - 多平台矩阵营销号统一管理与发布工具"
 authors = ["Mutantcat"]
 edition = "2024"
+license = "GPL-3.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

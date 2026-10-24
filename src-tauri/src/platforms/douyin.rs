@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 抖音平台适配器
 //!
 //! Spike 已验证：Obscura 可完整渲染抖音创作者平台

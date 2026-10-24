@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 import { invoke } from "@tauri-apps/api/core";
 
 /** 账号状态 */

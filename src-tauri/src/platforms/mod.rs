@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 平台适配器
 //!
 //! 每个平台实现 PlatformAdapter trait 的三个核心接口：

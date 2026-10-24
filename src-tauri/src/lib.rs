@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 营销通 - 多平台矩阵营销号统一管理与发布工具
 //!
 //! 架构：Tauri 2 (Rust) + Vue 3 前端 + Obscura 无头浏览器引擎

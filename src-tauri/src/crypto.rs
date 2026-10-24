@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 凭据加密模块
 //!
 //! 主密钥通过系统钥匙串（macOS Keychain）存储，首次运行时自动生成。

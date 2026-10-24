@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 自定义平台适配器
 //!
 //! 用户可在设置中注册自定义平台（创作者首页 URL、发布页 URL、

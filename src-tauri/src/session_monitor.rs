@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 会话健康监控（后台周期检测掉号）
 //!
 //! 周期性检测所有已打开会话的账号，发现掉号时：

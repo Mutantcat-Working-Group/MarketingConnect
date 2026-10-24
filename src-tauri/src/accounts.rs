@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
 //! 账号管理 Tauri 命令
 //!
 //! 前端通过这些命令与后端交互：账号 CRUD、Obscura 引擎控制、
