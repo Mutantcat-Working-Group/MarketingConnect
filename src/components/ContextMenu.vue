@@ -2,18 +2,7 @@
 <!-- Copyright (C) 2026 Mutantcat -->
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, nextTick } from "vue";
-
-/** 菜单项（divider 为 true 时渲染成分隔线，其余字段忽略） */
-interface MenuItem {
-  label?: string;
-  shortcut?: string;
-  danger?: boolean;
-  disabled?: boolean;
-  divider?: boolean;
-  /** 点击后不关闭菜单（用于展开二次确认等场景） */
-  keepOpen?: boolean;
-  action?: () => void;
-}
+import type { MenuItem } from "../menu";
 
 const props = defineProps<{ x: number; y: number; items: MenuItem[] }>();
 const emit = defineEmits<{ close: [] }>();

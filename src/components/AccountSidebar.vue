@@ -3,6 +3,7 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import * as api from "../api";
+import type { MenuItem } from "../menu";
 import ContextMenu from "./ContextMenu.vue";
 
 const props = defineProps<{
@@ -133,7 +134,7 @@ function openMenu(e: MouseEvent, account: api.Account) {
   menu.value = { x: e.clientX, y: e.clientY, account };
 }
 
-const menuItems = computed(() => {
+const menuItems = computed<MenuItem[]>(() => {
   const a = menu.value?.account;
   if (!a) return [];
   if (confirmDelete.value) {
@@ -142,21 +143,28 @@ const menuItems = computed(() => {
       { label: "取消", action: () => (confirmDelete.value = false) },
     ];
   }
-  return [
+  const items: MenuItem[] = [
     { label: "打开工作台", shortcut: "Enter", action: () => emit("select", a.id) },
     { label: "检测会话", action: () => checkSession(a) },
     { divider: true },
     { label: "复制备注名", action: () => copyText(a.name) },
     { label: "复制登录账号", action: () => copyText(a.username) },
-    ...(a.proxy_url ? [{ label: "复制代理地址", action: () => copyText(a.proxy_url as string) }] : []),
+  ];
+  if (a.proxy_url) {
+    items.push({ label: "复制代理地址", action: () => copyText(a.proxy_url as string) });
+  }
+  items.push(
     { divider: true },
     {
       label: "删除账号",
       danger: true,
       keepOpen: true,
-      action: () => (confirmDelete.value = true),
-    },
-  ];
+      action: () => {
+        confirmDelete.value = true;
+      },
+    }
+  );
+  return items;
 });
 
 /** 供全局快捷键调用：展开新增表单并聚焦第一个输入 */
