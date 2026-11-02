@@ -52,9 +52,9 @@
 
 从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包：
 
-- macOS：`MarketingConnect_1.0.1024_aarch64.dmg`
-- Windows：`MarketingConnect_1.0.1024_x64-setup.exe`
-- Linux：`MarketingConnect_1.0.1024_amd64.deb` / `MarketingConnect-1.0.1024-1.x86_64.rpm` / `MarketingConnect_1.0.1024_amd64.AppImage`
+- macOS：`MarketingConnect_1.0.20261102_aarch64.dmg`
+- Windows：`MarketingConnect_1.0.20261102_x64-setup.exe`
+- Linux：`MarketingConnect_1.0.20261102_amd64.AppImage`
 
 源码自编译需 Node.js 20+、pnpm 9+、Rust 1.75+，Linux 需 `libwebkit2gtk-4.1-dev` 等 Tauri 系统依赖；推送到 main 或打 v* 标签时 GitHub Actions 自动构建三平台安装包。
 
