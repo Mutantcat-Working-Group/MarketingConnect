@@ -120,6 +120,29 @@ jobs:
             --repo "${{ github.repository }}" \
             --pattern "*" --dir . --clobber
 
+      # GitHub Releases 会剥离资源名里的非 ASCII 字符：
+      # 本地产物名为「营销通_1.0.x_arch.ext」，上传后变成「_1.0.x_arch.ext」。
+      # 这里补回 ASCII 前缀，得到规范的 MarketingConnect_1.0.x_arch.ext。
+      # （安装后的软件名不受影响，仍是中文「营销通」）
+      - name: Normalize release asset names
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd assets
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+          shopt -s nullglob
+          for f in _*.dmg _*.exe _*.AppImage; do
+            new="MarketingConnect${f}"
+            echo "重命名: $f -> $new"
+            mv "$f" "$new"
+            gh release upload "$TAG" "$new" --repo "$REPO" --clobber
+            gh release delete-asset "$TAG" "$f" --repo "$REPO" --yes
+          done
+          echo "=== 规范化后的资产 ==="
+          ls -1
+
       - name: Generate checksum-sha1 / checksum-md5
         shell: bash
         run: |
