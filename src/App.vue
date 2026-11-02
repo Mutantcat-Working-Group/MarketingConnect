@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Mutantcat -->
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import * as api from "./api";
 import AccountSidebar from "./components/AccountSidebar.vue";
 import AccountWorkspace from "./components/AccountWorkspace.vue";
@@ -17,6 +17,87 @@ const engineLoading = ref(false);
 const logs = ref<api.EventLog[]>([]);
 const showSettings = ref(false);
 const showBatchPublish = ref(false);
+const showHelp = ref(false);
+
+const sidebarRef = ref<InstanceType<typeof AccountSidebar> | null>(null);
+
+/** 快捷键说明表 */
+const SHORTCUTS: { keys: string; desc: string }[] = [
+  { keys: "Ctrl/⌘ + N", desc: "新增账号" },
+  { keys: "Ctrl/⌘ + B", desc: "批量发布" },
+  { keys: "Ctrl/⌘ + Enter", desc: "批量发布中直接提交" },
+  { keys: "Ctrl/⌘ + ,", desc: "打开设置" },
+  { keys: "Ctrl/⌘ + Tab", desc: "切换到下一个选项卡" },
+  { keys: "Ctrl/⌘ + 1 ~ 9", desc: "跳到第 N 个选项卡" },
+  { keys: "Ctrl/⌘ + /", desc: "显示 / 隐藏本帮助" },
+  { keys: "Esc", desc: "逐层关闭弹层与右键菜单" },
+  { keys: "账号上右键", desc: "检测会话 / 复制 / 删除" },
+];
+
+/** 焦点在输入控件内时不劫持按键 */
+function isTyping(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  return (
+    el.tagName === "INPUT" ||
+    el.tagName === "TEXTAREA" ||
+    el.tagName === "SELECT" ||
+    el.isContentEditable
+  );
+}
+
+function onKeydown(e: KeyboardEvent) {
+  // Esc：按层级从外到内依次关闭
+  if (e.key === "Escape") {
+    if (showHelp.value) showHelp.value = false;
+    else if (showBatchPublish.value) showBatchPublish.value = false;
+    else if (showSettings.value) showSettings.value = false;
+    return;
+  }
+
+  const mod = e.metaKey || e.ctrlKey;
+  if (!mod) return;
+
+  const key = e.key.toLowerCase();
+
+  if (key === "n") {
+    e.preventDefault();
+    sidebarRef.value?.openForm();
+    return;
+  }
+  if (key === "b") {
+    e.preventDefault();
+    showBatchPublish.value = true;
+    return;
+  }
+  if (e.key === ",") {
+    e.preventDefault();
+    showSettings.value = true;
+    return;
+  }
+  if (e.key === "/" || (e.shiftKey && e.key === "?")) {
+    e.preventDefault();
+    showHelp.value = !showHelp.value;
+    return;
+  }
+  // Ctrl/⌘ + Tab / Shift + Tab：循环切换选项卡
+  if (e.key === "Tab" && openTabs.value.length > 0) {
+    e.preventDefault();
+    const len = openTabs.value.length;
+    const cur = activeTab.value ? openTabs.value.indexOf(activeTab.value) : -1;
+    const step = e.shiftKey ? -1 : 1;
+    activeTab.value = openTabs.value[(cur + step + len) % len] ?? null;
+    return;
+  }
+  // Ctrl/⌘ + 1~9：跳到第 N 个选项卡
+  if (!isTyping(e.target) && /^[1-9]$/.test(e.key)) {
+    const idx = Number(e.key) - 1;
+    if (idx < openTabs.value.length) {
+      e.preventDefault();
+      activeTab.value = openTabs.value[idx] ?? null;
+    }
+  }
+}
 
 const engineRunning = computed(() => engine.value.count > 0);
 const directInstance = computed(
@@ -81,6 +162,11 @@ function onAccountDeleted(id: string) {
 
 onMounted(async () => {
   await Promise.all([loadAccounts(), loadEngine(), loadLogs()]);
+  window.addEventListener("keydown", onKeydown);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKeydown);
 });
 </script>
 
@@ -99,13 +185,54 @@ onMounted(async () => {
         <span v-if="directInstance" class="engine-port">:{{ directInstance.port }}</span>
         <button
           class="batch-btn"
-          title="批量发布到多个账号"
+          title="批量发布到多个账号（Ctrl/⌘ + B）"
           @click="showBatchPublish = true"
         >
           批量发布
         </button>
-        <button class="settings-btn" title="短信提醒设置" @click="showSettings = true">
-          ⚙
+        <button
+          class="icon-btn"
+          title="快捷键（Ctrl/⌘ + /）"
+          aria-label="快捷键"
+          @click="showHelp = true"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="2" y="6" width="20" height="12" rx="2" />
+            <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9.5 14h5" />
+          </svg>
+        </button>
+        <button
+          class="icon-btn"
+          title="设置（Ctrl/⌘ + ,）"
+          aria-label="设置"
+          @click="showSettings = true"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+            />
+          </svg>
         </button>
         <button :disabled="engineLoading" @click="toggleEngine">
           {{ engineLoading ? "..." : engineRunning ? "停止引擎" : "启动引擎" }}
@@ -116,6 +243,7 @@ onMounted(async () => {
     <div class="main">
       <!-- 侧边栏：账号管理 -->
       <AccountSidebar
+        ref="sidebarRef"
         :accounts="accounts"
         :active-id="activeTab"
         @select="openAccount"
@@ -147,10 +275,24 @@ onMounted(async () => {
             @close="closeTab"
           />
           <div v-else class="placeholder">
-            <div class="placeholder-icon">🖥️</div>
+            <svg
+              class="placeholder-icon"
+              viewBox="0 0 24 24"
+              width="40"
+              height="40"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <path d="M8 21h8M12 17v4" />
+            </svg>
             <p>从左侧选择一个账号开始</p>
             <p class="placeholder-hint">
-              首次使用请先「启动引擎」，然后新增账号并打开工作台
+              首次使用请先「启动引擎」，然后新增账号并打开工作台（Ctrl/⌘ + N）
             </p>
           </div>
         </div>
@@ -175,13 +317,41 @@ onMounted(async () => {
     <div v-if="showSettings" class="modal-overlay" @click.self="showSettings = false">
       <div class="modal">
         <div class="modal-header">
-          <span>设置</span>
-          <button class="modal-close" @click="showSettings = false">×</button>
+          <div>
+            <div class="modal-title">设置</div>
+            <div class="modal-subtitle">短信提醒与自定义平台</div>
+          </div>
+          <button class="modal-close" aria-label="关闭设置" @click="showSettings = false">×</button>
         </div>
         <div class="modal-body">
           <SmsSettings />
           <div class="modal-divider" />
           <CustomPlatforms />
+        </div>
+      </div>
+    </div>
+
+    <!-- 快捷键帮助 -->
+    <div v-if="showHelp" class="modal-overlay" @click.self="showHelp = false">
+      <div class="modal help-modal">
+        <div class="modal-header">
+          <div>
+            <div class="modal-title">快捷键</div>
+            <div class="modal-subtitle">键盘可达，鼠标右键另有快捷操作</div>
+          </div>
+          <button class="modal-close" aria-label="关闭快捷键帮助" @click="showHelp = false">×</button>
+        </div>
+        <div class="modal-body">
+          <ul class="shortcut-list">
+            <li v-for="s in SHORTCUTS" :key="s.keys">
+              <span class="shortcut-desc">{{ s.desc }}</span>
+              <kbd>{{ s.keys }}</kbd>
+            </li>
+          </ul>
+        </div>
+        <div class="modal-footer">
+          <span class="modal-subtitle">随时按 Ctrl/⌘ + / 呼出本表</span>
+          <button class="primary" @click="showHelp = false">知道了</button>
         </div>
       </div>
     </div>
@@ -314,8 +484,7 @@ onMounted(async () => {
 }
 
 .placeholder-icon {
-  font-size: 40px;
-  opacity: 0.5;
+  opacity: 0.45;
 }
 
 .placeholder p {
@@ -405,10 +574,62 @@ onMounted(async () => {
   margin: 4px 0;
 }
 
-.settings-btn {
-  padding: 5px 9px;
-  font-size: 14px;
-  line-height: 1;
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--text-secondary);
+}
+
+.icon-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.help-modal {
+  width: 520px;
+}
+
+.help-modal .modal-body {
+  padding: 14px 18px;
+}
+
+.shortcut-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shortcut-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.shortcut-list li:last-child {
+  border-bottom: none;
+}
+
+.shortcut-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+kbd {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
 }
 
 .batch-btn {
