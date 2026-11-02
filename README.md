@@ -39,7 +39,9 @@
 
 #### 平台适配
 
-- 内置抖音适配器（扫码登录，Cookie 持久化）。
+- 内置平台：抖音、小红书、微信公众号、CSDN，均为截图辅助登录 + Cookie 加密持久化。
+- 发布支持：小红书（笔记标题/正文/发布）、CSDN（Markdown 标题/正文/发布）；
+  抖音、公众号因编辑器结构复杂暂不自动发文（可用截图视图手动发布）。
 - 自定义平台：注册任意平台的创作者页 / 发布页 URL 与表单选择器，按配置自动发布。
 
 #### 掉号提醒
@@ -52,9 +54,9 @@
 
 从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包：
 
-- macOS：`MarketingConnect_1.0.20261102_aarch64.dmg`
-- Windows：`MarketingConnect_1.0.20261102_x64-setup.exe`
-- Linux：`MarketingConnect_1.0.20261102_amd64.AppImage`
+- macOS：`营销通_1.0.20261102_aarch64.dmg`
+- Windows：`营销通_1.0.20261102_x64-setup.exe`
+- Linux：`营销通_1.0.20261102_amd64.AppImage`
 
 源码自编译需 Node.js 20+、pnpm 9+、Rust 1.75+，Linux 需 `libwebkit2gtk-4.1-dev` 等 Tauri 系统依赖；推送到 main 或打 v* 标签时 GitHub Actions 自动构建三平台安装包。
 
@@ -82,7 +84,9 @@
 
 ### 六、开发进度
 
-- [X] 多平台兼容（平台适配器 + 自定义平台注册）
+- [X] 多平台兼容（抖音 / 小红书 / 公众号 / CSDN + 自定义平台注册）
+- [X] 小红书自动发文（标题 / 正文 / 发布）
+- [X] CSDN 自动发文（Markdown 标题 / 正文 / 发布）
 - [X] 多账号登录态隔离
 - [X] 选项卡式账号工作台
 - [X] 代理地址支持（每代理独立引擎实例）
@@ -97,6 +101,7 @@
 - [X] 敏感词检测
 - [X] 系统托盘
 - [ ] 抖音自动发布流程（当前走自定义平台选择器方案）
+- [ ] 公众号自动发文（正文为 iframe 编辑器，需交互验证后实现）
 
 ### License
 

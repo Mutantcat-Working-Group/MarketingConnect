@@ -90,7 +90,14 @@ jobs:
           fi
           MOUNT=$(mktemp -d)
           hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -quiet
-          APP="$MOUNT/MarketingConnect.app"
+          # app 名为 productName（现为中文「营销通」），用 glob 避免写死
+          APP=$(ls -d "$MOUNT"/*.app 2>/dev/null | head -1)
+          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+            echo "::error::dmg 内找不到 .app"
+            hdiutil detach "$MOUNT" -quiet || true
+            exit 1
+          fi
+          echo "=== app 名称: $(basename "$APP") ==="
           echo "=== 签名信息 ==="
           codesign -dvv "$APP" 2>&1 || true
           echo "=== 签名校验 ==="

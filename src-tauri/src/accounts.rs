@@ -529,9 +529,9 @@ pub fn create_custom_platform(
     submit_selector: Option<String>,
     logged_in_pattern: Option<String>,
 ) -> Result<(), String> {
-    // 简单校验：id 不能与内置平台冲突
-    if id == "douyin" {
-        return Err("平台 ID 不能与内置平台冲突".into());
+    // 简单校验：id 不能与内置平台冲突（抖音 / 小红书 / 公众号 / CSDN）
+    if crate::platforms::is_builtin_platform_id(&id) {
+        return Err(format!("平台 ID「{}」为内置平台保留，请换一个", id));
     }
     db.create_custom_platform(
         &id,
