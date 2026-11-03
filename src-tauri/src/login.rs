@@ -41,8 +41,10 @@ pub async fn login_action(sessions: State<'_, SessionRegistry>, account_id: Stri
         }
         LoginAction::Key { key } => {
             let code = match key.as_str() { "Enter" => 13, "Tab" => 9, "Backspace" => 8, "Escape" => 27, "ArrowLeft" => 37, "ArrowRight" => 39, "Delete" => 46, _ => return Err("不支持的按键".into()) };
-            for event in ["keyDown", "keyUp"] {
-                let params: DispatchKeyEventParams = serde_json::from_value(json!({"type":event,"key":key,"windowsVirtualKeyCode":code,"nativeVirtualKeyCode":code})).map_err(|_| "按键参数无效")?;
+            for event in [if key == "Enter" { "keyDown" } else { "rawKeyDown" }, "keyUp"] {
+                let mut raw = json!({"type":event,"key":key,"code":key,"windowsVirtualKeyCode":code,"nativeVirtualKeyCode":code});
+                if key == "Enter" && event == "keyDown" { raw["text"] = json!("\r"); }
+                let params: DispatchKeyEventParams = serde_json::from_value(raw).map_err(|_| "按键参数无效")?;
                 page.execute(params).await.map_err(|_| "发送按键失败")?;
             }
         }
