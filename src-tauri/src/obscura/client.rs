@@ -54,11 +54,17 @@ impl CdpBrowser {
     /// 返回 (context_id, page)。每个账号调用一次，
     /// context 之间 cookie/storage 完全隔离。
     pub async fn create_context_page(&self, url: &str) -> Result<(String, chromiumoxide::Page)> {
+        info!("通过 CDP 创建 BrowserContext，目标页面: {}", url);
         let ctx_id = self
             .browser
             .create_browser_context(CreateBrowserContextParams::default())
             .await
-            .context("创建 BrowserContext 失败")?;
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "创建 BrowserContext 失败（CDP createBrowserContext 返回错误: {}）",
+                    error
+                )
+            })?;
 
         let params = CreateTargetParams::builder()
             .url(url)
@@ -118,6 +124,11 @@ impl CdpState {
         let browser = Arc::new(CdpBrowser::connect(ws_url).await?);
         self.set(port, browser.clone()).await;
         Ok(browser)
+    }
+
+    /// 清除指定端口的连接（用于 CDP 断线后的重连）
+    pub async fn remove(&self, port: u16) {
+        self.browsers.lock().await.remove(&port);
     }
 
     /// 清除所有连接

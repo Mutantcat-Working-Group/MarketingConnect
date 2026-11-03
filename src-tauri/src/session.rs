@@ -180,7 +180,18 @@ pub async fn resolve_browser(
     let port = obscura.get_or_start(app, account.proxy_url.as_deref())?;
 
     // 获取/建立 CDP 连接
-    let browser = cdp.get_or_connect(port, &crate::obscura::ws_url(port)).await?;
+    let ws_url = crate::obscura::ws_url(port);
+    let browser = match cdp.get_or_connect(port, &ws_url).await {
+        Ok(browser) => browser,
+        Err(first_error) => {
+            // 端口可能仍可连接，但旧 WebSocket handler 已断开；丢弃缓存后只重连一次。
+            warn!("CDP 连接失败，清理端口 {} 的缓存并重试: {}", port, first_error);
+            cdp.remove(port).await;
+            cdp.get_or_connect(port, &ws_url)
+                .await
+                .map_err(|retry_error| anyhow::anyhow!("CDP 重连失败（首次: {}; 重试: {}）", first_error, retry_error))?
+        }
+    };
 
     Ok((port, browser))
 }

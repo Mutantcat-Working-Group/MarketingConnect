@@ -61,9 +61,9 @@
 
 从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包：
 
-- macOS：`MarketingConnect_1.0.20261105_aarch64.dmg`
-- Windows：`MarketingConnect_1.0.20261105_x64-setup.exe`
-- Linux：`MarketingConnect_1.0.20261105_amd64.AppImage`
+- macOS：`MarketingConnect_1.0.20261106_aarch64.dmg`
+- Windows：`MarketingConnect_1.0.20261106_x64-setup.exe`
+- Linux：`MarketingConnect_1.0.20261106_amd64.AppImage`
 
 > 安装后的软件名为中文「**营销通**」（macOS 的 `营销通.app`、Windows 的安装目录与开始菜单快捷方式、Linux 的桌面项）。
 > 下载文件名用 ASCII 的 `MarketingConnect`，是因为 GitHub Releases 会自动剥离资源名中的非 ASCII 字符。
