@@ -65,8 +65,8 @@ export const loginAction = (accountId: string, action: LoginAction) =>
 export const setLoginActive = (accountId: string, active: boolean) =>
   invoke<void>("set_login_active", { accountId, active });
 export interface LoginResult { authenticated: boolean; saved: boolean; message: string }
-export const finishAccountLogin = (accountId: string) =>
-  invoke<LoginResult>("finish_account_login", { accountId });
+export const finishAccountLogin = (accountId: string, force = false) =>
+  invoke<LoginResult>("finish_account_login", { accountId, force });
 
 /** 发布任务 */
 export interface PublishTask {

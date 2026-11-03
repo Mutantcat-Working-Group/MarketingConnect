@@ -14,6 +14,7 @@ const secret = ref("");
 const message = ref("");
 const autoRefresh = ref(false);
 const autoConfirm = ref(true);
+const detectFailed = ref(false);
 const mode = ref<"password" | "sms" | "qr">("password");
 const pointer = ref({ x: 0.5, y: 0.5 });
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -59,6 +60,7 @@ async function reconcileSession() {
     if (!status.open) {
       secret.value = "";
       screenshot.value = "";
+      detectFailed.value = false;
       stopAutoRefresh();
       return;
     }
@@ -76,6 +78,7 @@ async function openSession() {
     // Opening a browser is not evidence of authentication.
     await api.setLoginActive(props.accountId, true);
     editing.value = true;
+    detectFailed.value = false;
     autoConfirm.value = true;
     ensureRefreshTimer();
     message.value = "登录编辑已开启，请在平台画面中完成登录。";
@@ -158,10 +161,11 @@ function scrollViewport(delta: number) {
   return sendAction({ kind: "scroll", ...pointer.value, delta });
 }
 
-async function confirmLogin(manual: boolean) {
-  const result = await api.finishAccountLogin(props.accountId);
+async function confirmLogin(manual: boolean, force = false) {
+  const result = await api.finishAccountLogin(props.accountId, force);
   if (disposed) return;
   if (!result.authenticated || !result.saved) {
+    detectFailed.value = manual;
     if (manual) {
       message.value = result.authenticated
         ? "平台已登录，但会话尚未保存。请重试完成并保存。"
@@ -170,6 +174,7 @@ async function confirmLogin(manual: boolean) {
     // Failed checks must not release the interactive login guard.
     return;
   }
+  detectFailed.value = false;
   online.value = true;
   editing.value = false;
   secret.value = "";
@@ -177,6 +182,12 @@ async function confirmLogin(manual: boolean) {
   window.dispatchEvent(new CustomEvent("accounts-changed"));
   await api.setLoginActive(props.accountId, false);
   message.value = "登录已确认，会话已安全保存。";
+}
+
+async function forceSave() {
+  if (!sessionOpen.value) return;
+  secret.value = "";
+  await run(() => confirmLogin(true, true), "未能保存当前会话，请确认页面仍在平台后台后重试。");
 }
 
 async function finishLogin() {
@@ -191,7 +202,10 @@ async function toggleEditing() {
     const next = !editing.value;
     await api.setLoginActive(props.accountId, next);
     editing.value = next;
-    if (next) online.value = false;
+    if (next) {
+      online.value = false;
+      detectFailed.value = false;
+    }
     ensureRefreshTimer();
     message.value = next
       ? "登录编辑已开启。请点击平台画面中的目标输入框。"
@@ -209,6 +223,7 @@ async function closeSession() {
     await api.closeAccountSession(props.accountId);
     sessionOpen.value = false;
     online.value = false;
+    detectFailed.value = false;
     screenshot.value = "";
     message.value = "会话已关闭。";
   }, "关闭会话失败，请重试。");
@@ -320,6 +335,10 @@ onUnmounted(() => {
         <p class="hint">在平台完成登录后确认。仅打开会话不会标记在线。</p>
         <button class="primary" :disabled="busy" @click="finishLogin">确认登录并保存会话</button>
       </footer>
+      <p v-if="detectFailed" class="force-save">
+        已进入平台后台但自动识别不到登录证据时，可手动保存当前会话（仅保存当前平台页面）。
+        <button :disabled="busy" @click="forceSave">页面已登录，仍要保存</button>
+      </p>
     </template>
     <p v-if="message" class="login-message" role="status" aria-live="polite">{{ message }}</p>
   </section>
@@ -354,4 +373,6 @@ h3 { font-size: 13px; font-weight: 600; color: var(--text-secondary); letter-spa
 .auto-confirm input { flex: none; width: auto; }
 .finish-row { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
 .login-message { margin-top: 14px; padding: 10px 12px; border-left: 2px solid var(--border); color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
+.force-save { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-muted); font-size: 12px; line-height: 1.7; }
+.force-save button { margin-top: 8px; font-size: 12px; }
 </style>

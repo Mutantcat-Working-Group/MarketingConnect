@@ -69,17 +69,18 @@
 
 ### 已知限制
 
-- 登录状态检测依赖平台页面上的正向证据（退出登录入口、账号标识或自定义平台的登录成功 URL 特征）。平台改版后可能无法自动确认，此时自定义平台应配置明确的登录成功 URL 特征。
+- 登录状态检测依赖平台页面上的正向证据（退出登录入口、账号标识或自定义平台的登录成功 URL 特征）。平台改版后可能无法自动确认；此时可在确认已进入平台后台后点「页面已登录，仍要保存」（仍要求当前页面在平台域名下）。
 - 凭证保存包含当前页面域名的 Cookie 与平台 origin 的 localStorage/sessionStorage；跨域 SSO 的其他域名 Cookie 可能未纳入。
 - 平台要求短信验证码或扫码重新验证时，仍需要人工完成，无法永久免登录。
+- MCP 访问令牌保存在本地 SQLite 配置行中（未额外加密），服务仅监听 127.0.0.1。
 
 ### 三、安装与下载
 
 从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包：
 
-- macOS：`MarketingConnect_1.0.20261108_aarch64.dmg`
-- Windows：`MarketingConnect_1.0.20261108_x64-setup.exe`
-- Linux：`MarketingConnect_1.0.20261108_amd64.AppImage`
+- macOS：`MarketingConnect_1.0.20261109_aarch64.dmg`
+- Windows：`MarketingConnect_1.0.20261109_x64-setup.exe`
+- Linux：`MarketingConnect_1.0.20261109_amd64.AppImage`
 
 > 安装后的软件名为中文「**营销通**」（macOS 的 `营销通.app`、Windows 的安装目录与开始菜单快捷方式、Linux 的桌面项）。
 > 下载文件名用 ASCII 的 `MarketingConnect`，是因为 GitHub Releases 会自动剥离资源名中的非 ASCII 字符。

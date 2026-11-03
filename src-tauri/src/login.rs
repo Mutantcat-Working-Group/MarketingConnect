@@ -75,19 +75,39 @@ pub async fn login_action(sessions: State<'_, SessionRegistry>, account_id: Stri
     Ok(())
 }
 
+/// 确认登录并保存凭证
+///
+/// 默认必须检测到平台正向认证证据才保存。平台改版导致证据识别失败时，
+/// 用户可显式传 `force=true` 强制保存，但仍要求当前页面处在平台域名下，
+/// 避免把 SSO 页或空白页当成凭证存下来。
 #[tauri::command]
-pub async fn finish_account_login(db: State<'_, Db>, sessions: State<'_, SessionRegistry>, account_id: String) -> Result<Value, String> {
+pub async fn finish_account_login(
+    db: State<'_, Db>,
+    sessions: State<'_, SessionRegistry>,
+    account_id: String,
+    force: Option<bool>,
+) -> Result<Value, String> {
     let account = db.list_accounts().map_err(|_| "读取账号失败")?.into_iter().find(|account| account.id == account_id).ok_or("账号不存在")?;
     let page = sessions.get_page(&account_id).ok_or("请先打开登录会话")?;
     let adapter = crate::platforms::find_adapter(&account.platform, Some(&db)).ok_or("不支持的平台")?;
     let authenticated = adapter.check_session(&page).await.map_err(|_| "登录状态检测失败")?;
     if !authenticated {
-        return Ok(json!({"authenticated":false,"saved":false,"message":"尚未确认登录成功。请完成平台验证码/扫码，并等待进入账号后台；需检测到可见的退出登录入口才会保存。"}));
+        if force != Some(true) {
+            return Ok(json!({"authenticated":false,"saved":false,"message":"尚未确认登录成功。请完成平台验证码/扫码，并等待进入账号后台；需检测到可见的退出登录入口才会保存。若页面确实已登录，可点「页面已登录，仍要保存」。"}));
+        }
+        // 强制保存的安全底线：当前页面必须仍在平台域名下。
+        let url = page.url().await.map_err(|_| "读取页面地址失败")?.unwrap_or_default();
+        if crate::credentials::http_origin(&url)
+            != crate::credentials::http_origin(adapter.creator_url())
+        {
+            return Err("当前页面不是平台页面，已拒绝保存。请先回到平台后台页面再试。".into());
+        }
     }
     let count = sessions.export_cookies(&db, &account_id).await.map_err(|_| "已检测到登录，但凭证保存失败，请重试")?;
     db.update_account_status(&account_id, AccountStatus::Online).map_err(|_| "凭证已保存，但登录状态写入失败")?;
     sessions.set_login_active(&account_id, false);
-    Ok(json!({"authenticated":true,"saved":true,"cookie_count":count,"message":"已确认登录，凭证已加密保存"}))
+    Ok(json!({"authenticated":true,"saved":true,"cookie_count":count,
+        "message":if authenticated {"已确认登录，凭证已加密保存"} else {"已按你的确认保存当前会话"}}))
 }
 
 #[cfg(test)]
