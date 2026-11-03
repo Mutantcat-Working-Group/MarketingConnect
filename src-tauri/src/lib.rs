@@ -91,6 +91,7 @@ pub fn run() {
             accounts::start_engine,
             accounts::stop_engine,
             accounts::engine_status,
+            accounts::account_session_status,
             accounts::open_account_session,
             accounts::close_account_session,
             accounts::check_account_session,

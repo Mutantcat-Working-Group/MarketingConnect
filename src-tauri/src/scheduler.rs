@@ -135,6 +135,11 @@ async fn execute_publish(app: &AppHandle, task_id: &str, account_id: &str) {
         }
     };
 
+    if sessions.is_login_active(account_id) {
+        fail_task(&db, task_id, "账号正在登录验证，未执行发布，请完成登录后重试");
+        return;
+    }
+
     match adapter.publish(&page, &content).await {
         Ok(()) => {
             let _ = db.update_task_status(task_id, "done", Some("发布成功"));

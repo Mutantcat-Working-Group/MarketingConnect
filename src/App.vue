@@ -57,6 +57,7 @@ function onKeydown(e: KeyboardEvent) {
   }
 
   const mod = e.metaKey || e.ctrlKey;
+  if (isTyping(e.target)) return;
   if (!mod) return;
 
   const key = e.key.toLowerCase();

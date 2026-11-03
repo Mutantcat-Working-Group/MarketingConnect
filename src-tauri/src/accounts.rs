@@ -78,6 +78,18 @@ pub async fn open_account_session(
         .map_err(|e| e.to_string())
 }
 
+/// 查询账号会话状态（不导航、不检测登录态）
+#[tauri::command]
+pub fn account_session_status(
+    sessions: State<'_, SessionRegistry>,
+    account_id: String,
+) -> serde_json::Value {
+    serde_json::json!({
+        "open": sessions.get_page(&account_id).is_some(),
+        "login_active": sessions.is_login_active(&account_id),
+    })
+}
+
 /// 关闭账号会话
 #[tauri::command]
 pub async fn close_account_session(
@@ -294,7 +306,18 @@ pub async fn batch_publish(
             }
         };
 
-        // 2. 打开会话（未打开时自动打开）
+        // 2. 登录交互期间不允许发布流程接管同一页面。
+        if sessions.is_login_active(account_id) {
+            results.push(serde_json::json!({
+                "account_id": account_id,
+                "account_name": account.name,
+                "success": false,
+                "error": "账号正在登录验证，请完成登录后再发布",
+            }));
+            continue;
+        }
+
+        // 3. 打开会话（未打开时自动打开）
         if sessions.get_page(account_id).is_none() {
             if let Err(e) = sessions.open(&app, &db, &account).await {
                 results.push(serde_json::json!({

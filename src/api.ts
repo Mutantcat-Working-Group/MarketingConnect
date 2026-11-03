@@ -131,6 +131,9 @@ export const engineStatus = () => invoke<EngineStatus>("engine_status");
 
 // ---------- 会话检测 ----------
 
+export interface AccountSessionStatus { open: boolean; login_active: boolean }
+export const accountSessionStatus = (accountId: string) =>
+  invoke<AccountSessionStatus>("account_session_status", { accountId });
 export const openAccountSession = (accountId: string) =>
   invoke<void>("open_account_session", { accountId });
 

@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Mutantcat -->
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import * as api from "../api";
 
 const props = defineProps<{ accountId: string }>();
@@ -13,6 +13,7 @@ const screenshot = ref("");
 const secret = ref("");
 const message = ref("");
 const autoRefresh = ref(false);
+const autoConfirm = ref(true);
 const mode = ref<"password" | "sms" | "qr">("password");
 const pointer = ref({ x: 0.5, y: 0.5 });
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -43,6 +44,29 @@ async function captureViewport() {
   if (!disposed) screenshot.value = `data:image/png;base64,${base64}`;
 }
 
+async function reconcileSession() {
+  if (busy.value || disposed) return;
+  await run(async () => {
+    const [status, accounts] = await Promise.all([
+      api.accountSessionStatus(props.accountId),
+      api.listAccounts(),
+    ]);
+    if (disposed) return;
+    sessionOpen.value = status.open;
+    editing.value = status.open && status.login_active;
+    online.value = status.open && !status.login_active
+      && accounts.find((account) => account.id === props.accountId)?.status === "online";
+    if (!status.open) {
+      secret.value = "";
+      screenshot.value = "";
+      stopAutoRefresh();
+      return;
+    }
+    ensureRefreshTimer();
+    await captureViewport();
+  }, "无法读取登录会话状态，请重试。");
+}
+
 async function openSession() {
   await run(async () => {
     message.value = "";
@@ -52,6 +76,8 @@ async function openSession() {
     // Opening a browser is not evidence of authentication.
     await api.setLoginActive(props.accountId, true);
     editing.value = true;
+    autoConfirm.value = true;
+    ensureRefreshTimer();
     message.value = "登录编辑已开启，请在平台画面中完成登录。";
     if (!disposed) await captureViewport();
   }, "无法打开登录编辑，请重试或关闭会话后重新打开。");
@@ -68,26 +94,30 @@ function stopAutoRefresh() {
   refreshTimer = null;
 }
 
-function scheduleRefresh() {
-  if (!autoRefresh.value || disposed) return;
+function ensureRefreshTimer() {
+  if (disposed || refreshTimer !== null || !sessionOpen.value) return;
+  if (!autoRefresh.value && !(autoConfirm.value && editing.value)) return;
   refreshTimer = setTimeout(async () => {
     refreshTimer = null;
-    await refreshScreenshot();
-    scheduleRefresh();
+    await run(async () => {
+      if (autoConfirm.value && editing.value) await confirmLogin(false);
+      if (!disposed && sessionOpen.value && (autoRefresh.value || (autoConfirm.value && editing.value))) {
+        await captureViewport();
+      }
+    }, "自动更新暂时失败，可手动刷新或确认登录。");
+    ensureRefreshTimer();
   }, 2500);
 }
 
 function toggleAutoRefresh() {
-  if (autoRefresh.value) stopAutoRefresh();
-  else {
-    autoRefresh.value = true;
-    scheduleRefresh();
-  }
+  autoRefresh.value = !autoRefresh.value;
+  ensureRefreshTimer();
 }
 
 async function sendAction(action: api.LoginAction) {
   if (!canInteract.value) return;
   await run(async () => {
+    online.value = false;
     await api.loginAction(props.accountId, action);
     message.value = "操作已发送。可刷新画面确认平台状态。";
     if (!disposed) await captureViewport();
@@ -118,7 +148,7 @@ function sendKey(key: "Tab" | "Backspace" | "Enter") {
 }
 
 function viewportKey(event: KeyboardEvent) {
-  if (event.key === "Enter" || event.key === "Backspace") {
+  if (event.key === "Enter" || event.key === "Backspace" || event.key === "Tab") {
     event.preventDefault();
     void sendKey(event.key);
   }
@@ -128,25 +158,31 @@ function scrollViewport(delta: number) {
   return sendAction({ kind: "scroll", ...pointer.value, delta });
 }
 
-async function finishLogin() {
-  if (!sessionOpen.value) return;
-  secret.value = "";
-  await run(async () => {
-    const result = await api.finishAccountLogin(props.accountId);
-    if (!result.authenticated || !result.saved) {
+async function confirmLogin(manual: boolean) {
+  const result = await api.finishAccountLogin(props.accountId);
+  if (disposed) return;
+  if (!result.authenticated || !result.saved) {
+    if (manual) {
       message.value = result.authenticated
         ? "平台已登录，但会话尚未保存。请重试完成并保存。"
         : "尚未确认平台登录，请继续在画面中完成登录。";
-      // Failed checks must not release the interactive login guard.
-      return;
     }
-    online.value = true;
-    stopAutoRefresh();
-    window.dispatchEvent(new CustomEvent("accounts-changed"));
-    await api.setLoginActive(props.accountId, false);
-    editing.value = false;
-    message.value = "登录已确认，会话已安全保存。";
-  }, "未能完成登录确认或退出编辑，请重试；不会自动关闭登录编辑。");
+    // Failed checks must not release the interactive login guard.
+    return;
+  }
+  online.value = true;
+  editing.value = false;
+  secret.value = "";
+  stopAutoRefresh();
+  window.dispatchEvent(new CustomEvent("accounts-changed"));
+  await api.setLoginActive(props.accountId, false);
+  message.value = "登录已确认，会话已安全保存。";
+}
+
+async function finishLogin() {
+  if (!sessionOpen.value) return;
+  secret.value = "";
+  await run(() => confirmLogin(true), "未能完成登录确认或退出编辑，请重试；不会自动关闭登录编辑。");
 }
 
 async function toggleEditing() {
@@ -155,6 +191,8 @@ async function toggleEditing() {
     const next = !editing.value;
     await api.setLoginActive(props.accountId, next);
     editing.value = next;
+    if (next) online.value = false;
+    ensureRefreshTimer();
     message.value = next
       ? "登录编辑已开启。请点击平台画面中的目标输入框。"
       : "已结束编辑；这不代表平台已登录或会话已保存。";
@@ -170,6 +208,7 @@ async function closeSession() {
     editing.value = false;
     await api.closeAccountSession(props.accountId);
     sessionOpen.value = false;
+    online.value = false;
     screenshot.value = "";
     message.value = "会话已关闭。";
   }, "关闭会话失败，请重试。");
@@ -180,8 +219,14 @@ function selectMode(next: "password" | "sms" | "qr") {
   secret.value = "";
 }
 
+onMounted(() => {
+  window.addEventListener("accounts-changed", reconcileSession);
+  void reconcileSession();
+});
+
 onUnmounted(() => {
   disposed = true;
+  window.removeEventListener("accounts-changed", reconcileSession);
   stopAutoRefresh();
   secret.value = "";
   screenshot.value = "";
@@ -267,6 +312,10 @@ onUnmounted(() => {
         </div>
         <p class="hint">先点击画面内的目标输入框。此处不会自动选择字段；发送后立即清空，不记录输入内容。</p>
       </form>
+      <label class="auto-confirm">
+        <input v-model="autoConfirm" type="checkbox" :disabled="busy" @change="ensureRefreshTimer" />
+        自动确认并保存登录（编辑期间每 2.5 秒检查当前页面，不会跳转）
+      </label>
       <footer class="finish-row">
         <p class="hint">在平台完成登录后确认。仅打开会话不会标记在线。</p>
         <button class="primary" :disabled="busy" @click="finishLogin">确认登录并保存会话</button>
@@ -301,6 +350,8 @@ h3 { font-size: 13px; font-weight: 600; color: var(--text-secondary); letter-spa
 .input-form label { display: block; margin-bottom: 7px; color: var(--text-secondary); font-size: 12px; }
 .input-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
 .input-row input { flex: 1; min-width: 180px; }
+.auto-confirm { display: flex; align-items: center; gap: 8px; margin-top: 16px; color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
+.auto-confirm input { flex: none; width: auto; }
 .finish-row { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
 .login-message { margin-top: 14px; padding: 10px 12px; border-left: 2px solid var(--border); color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
 </style>

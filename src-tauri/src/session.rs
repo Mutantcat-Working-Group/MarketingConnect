@@ -16,6 +16,9 @@ use crate::db::{Account, Db};
 use crate::obscura::{CdpBrowser, CdpState, ObscuraManager};
 use crate::platforms;
 use anyhow::{Context, Result};
+use chromiumoxide::cdp::browser_protocol::page::{
+    AddScriptToEvaluateOnNewDocumentParams, RemoveScriptToEvaluateOnNewDocumentParams,
+};
 use chromiumoxide::Page;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -64,7 +67,7 @@ impl SessionRegistry {
     ///
     /// 1. 按账号代理获取/启动 Obscura 实例并建立 CDP 连接
     /// 2. 创建独立 BrowserContext + about:blank 页面，先恢复 cookie
-    /// 3. 导航到平台，来源匹配时恢复 storage 并重新导航
+    /// 3. 注册仅匹配平台来源的 storage 初始化脚本，再导航并移除脚本
     pub async fn open(&self, app: &AppHandle, db: &Db, account: &Account) -> Result<()> {
         // 已存在则直接返回
         if self.get_page(account.id.as_str()).is_some() {
@@ -103,29 +106,46 @@ impl SessionRegistry {
             info!("已恢复 {} 个 cookie", count);
         }
 
-        let navigation = async {
-            page.goto(creator_url.as_str()).await
-                .map_err(|_| anyhow::anyhow!("平台页面导航失败"))?;
+        // Install before navigation: a SPA may redirect to SSO before a later evaluate.
+        // Never navigate to the saved URL; only the configured creator URL is trusted.
+        let initialization = async {
             if let (Some(saved), Some(origin)) = (&credentials, trusted_origin.as_deref()) {
                 if saved.storage_matches(origin)
                     && (!saved.local_storage.is_empty() || !saved.session_storage.is_empty())
                 {
-                    match restore_storage(&page, saved, origin).await {
-                        Ok(true) => {
-                            // Do not navigate to the saved URL: it is metadata, not trusted input.
-                            page.goto(creator_url.as_str()).await
-                                .map_err(|_| anyhow::anyhow!("平台页面重新导航失败"))?;
-                        }
-                        Ok(false) => warn!("页面来源不匹配，跳过 storage 恢复"),
-                        Err(_) => warn!("页面 storage 恢复失败"),
-                    }
+                    let script = storage_restore_script(saved, origin)?;
+                    let identifier = page.evaluate_on_new_document(
+                        AddScriptToEvaluateOnNewDocumentParams::new(script),
+                    ).await.map_err(|_| anyhow::anyhow!("注册页面凭据初始化失败"))?;
+                    return Ok(Some(identifier));
                 }
             }
-            Ok::<(), anyhow::Error>(())
+            Ok::<_, anyhow::Error>(None)
         }.await;
-        if let Err(error) = navigation {
+        let script_id = match initialization {
+            Ok(identifier) => identifier,
+            Err(error) => {
+                let _ = browser.dispose_context(&context_id).await;
+                return Err(error);
+            }
+        };
+        let navigation = page.goto(creator_url.as_str()).await
+            .map_err(|_| anyhow::anyhow!("平台页面导航失败"));
+        // Always remove, including after navigation failure. If removal fails, dispose
+        // the context instead of allowing stale credentials to overwrite later updates.
+        let removal_failed = if let Some(identifier) = script_id {
+            page.execute(RemoveScriptToEvaluateOnNewDocumentParams::new(identifier))
+                .await.is_err()
+        } else {
+            false
+        };
+        if navigation.is_err() || removal_failed {
             let _ = browser.dispose_context(&context_id).await;
-            return Err(error);
+            return Err(if removal_failed {
+                anyhow::anyhow!("移除页面凭据初始化失败")
+            } else {
+                anyhow::anyhow!("平台页面导航失败")
+            });
         }
 
         self.sessions
@@ -327,9 +347,9 @@ async fn export_storage(page: &Page, trusted_origin: &str) -> Result<Option<Page
         && http_origin(&storage.url).as_deref() == Some(trusted_origin)))
 }
 
-async fn restore_storage(page: &Page, saved: &Credentials, trusted_origin: &str) -> Result<bool> {
+fn storage_restore_script(saved: &Credentials, trusted_origin: &str) -> Result<String> {
     if !saved.storage_matches(trusted_origin) {
-        return Ok(false);
+        return Err(anyhow::anyhow!("storage 来源不匹配"));
     }
     let data = serde_json::to_string(&serde_json::json!({
         "origin": trusted_origin,
@@ -339,14 +359,16 @@ async fn restore_storage(page: &Page, saved: &Credentials, trusted_origin: &str)
     // Parse JSON rather than a JS object literal, preserving keys such as __proto__.
     let literal = serde_json::to_string(&data)
         .map_err(|_| anyhow::anyhow!("storage 序列化失败"))?;
-    let script = format!(r#"(() => {{
+    Ok(format!(r#"(() => {{
+        // Only initialize the main platform document, never embedded login frames.
+        if (window.top !== window) return;
         const saved = JSON.parse({literal});
-        if (window.location.origin !== saved.origin) return false;
-        for (const [key, value] of Object.entries(saved.local)) window.localStorage.setItem(key, value);
-        for (const [key, value] of Object.entries(saved.session)) window.sessionStorage.setItem(key, value);
-        return true;
-    }})()"#);
-    page.evaluate(script).await
-        .map_err(|_| anyhow::anyhow!("storage 恢复失败"))?
-        .into_value().map_err(|_| anyhow::anyhow!("storage 恢复结果无效"))
+        if (window.location.origin !== saved.origin) return;
+        try {{
+            for (const [key, value] of Object.entries(saved.local)) window.localStorage.setItem(key, value);
+            for (const [key, value] of Object.entries(saved.session)) window.sessionStorage.setItem(key, value);
+        }} catch (_) {{
+            // Storage may be disabled. Do not throw or log credential-bearing script data.
+        }}
+    }})()"#))
 }

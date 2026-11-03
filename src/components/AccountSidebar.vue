@@ -121,6 +121,7 @@ async function submit() {
     };
     if (editingId.value) {
       await api.updateAccount(editingId.value, { ...input, clear_password: clearPassword.value });
+      window.dispatchEvent(new CustomEvent("accounts-changed"));
     } else {
       await api.createAccount({ ...input, platform: form.value.platform });
     }
