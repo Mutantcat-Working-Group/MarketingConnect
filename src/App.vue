@@ -7,6 +7,7 @@ import AccountSidebar from "./components/AccountSidebar.vue";
 import AccountWorkspace from "./components/AccountWorkspace.vue";
 import SmsSettings from "./components/SmsSettings.vue";
 import CustomPlatforms from "./components/CustomPlatforms.vue";
+import McpSettings from "./components/McpSettings.vue";
 import BatchPublish from "./components/BatchPublish.vue";
 
 const accounts = ref<api.Account[]>([]);
@@ -319,11 +320,13 @@ onBeforeUnmount(() => {
         <div class="modal-header">
           <div>
             <div class="modal-title">设置</div>
-            <div class="modal-subtitle">短信提醒与自定义平台</div>
+            <div class="modal-subtitle">MCP 接入、短信提醒与自定义平台</div>
           </div>
           <button class="modal-close" aria-label="关闭设置" @click="showSettings = false">×</button>
         </div>
         <div class="modal-body">
+          <McpSettings />
+          <div class="modal-divider" />
           <SmsSettings />
           <div class="modal-divider" />
           <CustomPlatforms />

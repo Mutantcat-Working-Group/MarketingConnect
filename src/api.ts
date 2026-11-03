@@ -2,6 +2,22 @@
 // Copyright (C) 2026 Mutantcat
 import { invoke } from "@tauri-apps/api/core";
 
+export interface McpConfig {
+  enabled: boolean;
+  port: number;
+  token: string;
+  allow_write: boolean;
+}
+export interface McpStatus {
+  config: McpConfig;
+  running: boolean;
+  url: string;
+  running_port: number | null;
+}
+export const getMcpConfig = () => invoke<McpStatus>("get_mcp_config");
+export const saveMcpConfig = (config: McpConfig) => invoke<void>("save_mcp_config", { config });
+export const testMcp = () => invoke<string>("test_mcp");
+
 /** 账号状态 */
 export type AccountStatus = "offline" | "online" | "error";
 

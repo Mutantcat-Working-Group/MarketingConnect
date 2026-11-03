@@ -7,6 +7,7 @@
 mod accounts;
 mod crypto;
 mod db;
+mod mcp;
 mod obscura;
 mod platforms;
 mod scheduler;
@@ -51,6 +52,12 @@ pub fn run() {
             // CDP 连接状态与账号会话注册表
             app.manage(CdpState::new());
             app.manage(SessionRegistry::new());
+            app.manage(mcp::McpState::default());
+            let mcp_app = app.handle().clone();
+            let mcp_config = mcp::config::McpConfig::load(&app.state::<Db>());
+            if let Err(error) = tauri::async_runtime::block_on(mcp::apply(&mcp_app, mcp_config)) {
+                tracing::error!("MCP 自动启动失败: {}", error);
+            }
 
             // 定时调度器（后台启动）
             let handle = app.handle().clone();
@@ -97,6 +104,9 @@ pub fn run() {
             accounts::create_custom_platform,
             accounts::delete_custom_platform,
             accounts::check_sensitive_words,
+            mcp::get_mcp_config,
+            mcp::save_mcp_config,
+            mcp::test_mcp,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -44,6 +44,13 @@
   抖音、公众号因编辑器结构复杂暂不自动发文（可用截图视图手动发布）。
 - 自定义平台：注册任意平台的创作者页 / 发布页 URL 与表单选择器，按配置自动发布。
 
+#### MCP 接入
+
+- 在右上角「设置」→「MCP 接入」启用，默认地址为 `http://127.0.0.1:8931/mcp`。
+- 支持 HTTP MCP 客户端查询账号、平台、日志、引擎状态和敏感词；开启「允许写入」后可批量发布、建号、删号、控制引擎。
+- 可设置 Bearer 令牌，复制客户端 JSON 配置；仅监听本机，应用退出后服务不可用。
+- 默认关闭服务和写入权限；「测试连接」可检查服务与工具列表。
+
 #### 掉号提醒
 
 - 后台每 5 分钟自动检测已打开会话，掉号即告警。
@@ -54,9 +61,9 @@
 
 从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包：
 
-- macOS：`MarketingConnect_1.0.20261104_aarch64.dmg`
-- Windows：`MarketingConnect_1.0.20261104_x64-setup.exe`
-- Linux：`MarketingConnect_1.0.20261104_amd64.AppImage`
+- macOS：`MarketingConnect_1.0.20261105_aarch64.dmg`
+- Windows：`MarketingConnect_1.0.20261105_x64-setup.exe`
+- Linux：`MarketingConnect_1.0.20261105_amd64.AppImage`
 
 > 安装后的软件名为中文「**营销通**」（macOS 的 `营销通.app`、Windows 的安装目录与开始菜单快捷方式、Linux 的桌面项）。
 > 下载文件名用 ASCII 的 `MarketingConnect`，是因为 GitHub Releases 会自动剥离资源名中的非 ASCII 字符。

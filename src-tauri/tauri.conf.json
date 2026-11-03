@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "营销通",
   "mainBinaryName": "marketingconnect",
-  "version": "1.0.20261104",
+  "version": "1.0.20261105",
   "identifier": "com.mutantcat.marketingconnect",
   "build": {
     "beforeDevCommand": "pnpm dev",
