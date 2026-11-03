@@ -20,7 +20,7 @@ use chromiumoxide::cdp::browser_protocol::page::{
     AddScriptToEvaluateOnNewDocumentParams, RemoveScriptToEvaluateOnNewDocumentParams,
 };
 use chromiumoxide::Page;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
@@ -35,17 +35,24 @@ pub struct AccountSession {
     trusted_origin: Option<String>,
 }
 
+/// 交互式登录的保护时长
+///
+/// 该标记会暂停后台巡检与发布。用户中途离开（切走标签页、放着不管）时，
+/// 标记必须能自行过期，否则账号会被永久锁死、发布持续失败。
+const LOGIN_ACTIVE_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// 会话注册表（account_id → session）
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<String, AccountSession>>,
-    interactive_logins: Mutex<HashSet<String>>,
+    /// account_id → 最近一次交互时间
+    interactive_logins: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl SessionRegistry {
     pub fn new() -> Self {
         SessionRegistry {
             sessions: Mutex::new(HashMap::new()),
-            interactive_logins: Mutex::new(HashSet::new()),
+            interactive_logins: Mutex::new(HashMap::new()),
         }
     }
 
@@ -53,14 +60,23 @@ impl SessionRegistry {
     pub fn set_login_active(&self, account_id: &str, active: bool) {
         let mut logins = self.interactive_logins.lock().unwrap();
         if active {
-            logins.insert(account_id.to_string());
+            // 每次交互都刷新时间戳，长时间扫码/填表不会被误判为过期。
+            logins.insert(account_id.to_string(), std::time::Instant::now());
         } else {
             logins.remove(account_id);
         }
     }
 
     pub fn is_login_active(&self, account_id: &str) -> bool {
-        self.interactive_logins.lock().unwrap().contains(account_id)
+        let mut logins = self.interactive_logins.lock().unwrap();
+        match logins.get(account_id) {
+            Some(started) if started.elapsed() < LOGIN_ACTIVE_TTL => true,
+            Some(_) => {
+                logins.remove(account_id);
+                false
+            }
+            None => false,
+        }
     }
 
     /// 为账号打开会话
@@ -217,6 +233,14 @@ impl SessionRegistry {
                 Err(_) => return Err(anyhow::anyhow!("页面 storage 导出失败，未覆盖已保存凭据")),
             }
         }
+        // 空快照通常意味着页面被重定向到空白页或尚未真正登录；
+        // 直接写入会用空数据覆盖可用凭据，导致下次打开直接掉登录。
+        if count == 0
+            && saved.local_storage.is_empty()
+            && saved.session_storage.is_empty()
+        {
+            return Err(anyhow::anyhow!("未读取到任何登录凭证，已保留原有凭据"));
+        }
         db.save_account_cookies(account_id, &saved.to_json()?)
             .map_err(|_| anyhow::anyhow!("保存账号凭据失败"))?;
         info!("已导出 {} 个 cookie", count);
@@ -266,11 +290,19 @@ pub async fn resolve_browser(
     app: &AppHandle,
     account: &Account,
 ) -> Result<(u16, Arc<CdpBrowser>)> {
-    let obscura = app.state::<ObscuraManager>();
     let cdp = app.state::<CdpState>();
 
-    // 获取/启动账号代理对应的实例
-    let port = obscura.get_or_start(app, account.proxy_url.as_deref())?;
+    // 获取/启动账号代理对应的实例。
+    // `get_or_start` 内部用阻塞 sleep 轮询端口，最多等 10 秒；
+    // 直接在异步上下文里调用会卡住整个 Tokio 工作线程（连带 MCP、调度器）。
+    let app_for_start = app.clone();
+    let proxy = account.proxy_url.clone();
+    let port = tokio::task::spawn_blocking(move || {
+        let obscura = app_for_start.state::<ObscuraManager>();
+        obscura.get_or_start(&app_for_start, proxy.as_deref())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("启动浏览器引擎任务失败: {}", e))??;
 
     // 获取/建立 CDP 连接
     let ws_url = crate::obscura::ws_url(port);

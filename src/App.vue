@@ -111,7 +111,11 @@ const activeAccount = computed(() =>
 );
 
 async function loadAccounts() {
-  accounts.value = await api.listAccounts();
+  try {
+    accounts.value = await api.listAccounts();
+  } catch {
+    // 读取失败时保留上一次列表，避免界面被清空
+  }
 }
 
 async function loadEngine() {

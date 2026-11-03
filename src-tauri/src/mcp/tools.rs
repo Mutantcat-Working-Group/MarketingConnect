@@ -30,7 +30,7 @@ pub fn definitions(config: &McpConfig) -> Vec<Value> {
         json!({"name":"check_sensitive_words","description":"检测文案中的敏感词。","inputSchema":{"type":"object","properties":{"text":text_property("需要检测的文本")},"required":["text"]}}),
         json!({"name":"open_account_session","description":format!("打开指定账号的浏览器会话{}。", write_note),"inputSchema":{"type":"object","properties":{"account_id":text_property("账号 ID")},"required":["account_id"]}}),
         json!({"name":"batch_publish","description":format!("将同一内容发布到多个账号{}。", write_note),"inputSchema":{"type":"object","properties":{"account_ids":{"type":"array","items":{"type":"string"},"description":"账号 ID 列表"},"title":{"type":"string","description":"可选标题"},"content":text_property("正文内容"),"media_paths":{"type":"string","description":"可选，逗号分隔的媒体路径"}},"required":["account_ids","content"]}}),
-        json!({"name":"create_account","description":format!("新增一个营销账号{}。", write_note),"inputSchema":{"type":"object","properties":{"platform":text_property("平台 ID"),"name":text_property("备注名称"),"username":text_property("登录账号"),"password":{"type":"string","description":"登录密码"},"proxy_url":{"type":"string","description":"可选代理地址"},"group_name":{"type":"string","description":"可选分组"}},"required":["platform","name","username"]}}),
+        json!({"name":"create_account","description":format!("新增一个营销账号（登录账号与密码可选，可稍后在登录面板用验证码/扫码登录）{}。", write_note),"inputSchema":{"type":"object","properties":{"platform":text_property("平台 ID"),"name":text_property("备注名称"),"username":{"type":"string","description":"可选，登录账号/手机号"},"password":{"type":"string","description":"可选登录密码"},"proxy_url":{"type":"string","description":"可选代理地址"},"group_name":{"type":"string","description":"可选分组"}},"required":["platform","name"]}}),
         json!({"name":"delete_account","description":format!("删除一个账号及其会话{}。", write_note),"inputSchema":{"type":"object","properties":{"account_id":text_property("账号 ID")},"required":["account_id"]}}),
         json!({"name":"start_engine","description":format!("启动浏览器引擎{}。", write_note),"inputSchema":{"type":"object","properties":{}}}),
         json!({"name":"stop_engine","description":format!("停止全部浏览器引擎实例{}。", write_note),"inputSchema":{"type":"object","properties":{}}}),
@@ -159,7 +159,7 @@ pub async fn call(
             let input = NewAccount {
                 platform: required_string(args, "platform")?,
                 name: required_string(args, "name")?,
-                username: required_string(args, "username")?,
+                username: optional_string(args, "username").unwrap_or_default(),
                 password: optional_string(args, "password"),
                 proxy_url: optional_string(args, "proxy_url"),
                 group_name: optional_string(args, "group_name"),

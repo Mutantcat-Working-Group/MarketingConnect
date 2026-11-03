@@ -62,18 +62,25 @@ pub fn run() {
                 tracing::error!("MCP 自动启动失败: {}", error);
             }
 
-            // 定时调度器（后台启动）
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match scheduler::PublishScheduler::new().await {
-                    Ok(s) => {
-                        handle.manage(Arc::new(s));
-                    }
-                    Err(e) => {
-                        tracing::error!("调度器启动失败: {}", e);
+            // 定时调度器：同步创建并启动，再重建数据库里已有的 cron 任务。
+            // 之前放在 spawn 里会导致「创建任务时调度器还没就绪」而静默丢失作业。
+            match tauri::async_runtime::block_on(scheduler::PublishScheduler::new()) {
+                Ok(scheduler) => {
+                    let scheduler = Arc::new(scheduler);
+                    app.manage(scheduler.clone());
+                    let (registered, failed) = tauri::async_runtime::block_on(
+                        scheduler::reload_jobs(app.handle(), &scheduler, &app.state::<Db>()),
+                    );
+                    if failed > 0 {
+                        tracing::warn!("有 {} 个定时任务重建失败", failed);
+                    } else {
+                        tracing::info!("已恢复 {} 个定时任务", registered);
                     }
                 }
-            });
+                Err(e) => {
+                    tracing::error!("调度器启动失败: {}", e);
+                }
+            }
 
             // 会话健康监控（后台周期检测掉号，默认 5 分钟）
             session_monitor::spawn_monitor(app.handle().clone(), None);

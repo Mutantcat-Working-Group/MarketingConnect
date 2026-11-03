@@ -221,9 +221,10 @@ pub async fn capture_screenshot(
 
 /// 创建发布任务
 ///
-/// 若带 cron 表达式，自动注册到定时调度器。
+/// 若带 cron 表达式，同步注册到定时调度器；注册失败会明确报错，
+/// 不会出现「界面提示创建成功但任务永远不会执行」的静默失败。
 #[tauri::command]
-pub fn create_publish_task(
+pub async fn create_publish_task(
     app: AppHandle,
     db: State<'_, Db>,
     account_id: String,
@@ -244,24 +245,33 @@ pub fn create_publish_task(
         )
         .map_err(|e| e.to_string())?;
 
-    // 带 cron 表达式：注册定时作业
-    if let Some(cron) = task.cron_expr.clone() {
-        if let Some(state) = app.try_state::<Arc<crate::scheduler::PublishScheduler>>() {
-            let scheduler = state.inner().clone();
-            let app_clone = app.clone();
-            let task_id = task.id.clone();
-            let account_id = account_id.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = scheduler
-                    .add_job(app_clone, &cron, task_id, account_id)
-                    .await
-                {
-                    tracing::error!("注册定时任务失败: {}", e);
-                }
-            });
-        } else {
-            tracing::warn!("调度器尚未就绪，任务 {} 未注册定时", task.id);
+    // 带 cron 表达式：立即注册定时作业（不再依赖调度器是否已就绪）
+    if let Some(cron) = task.cron_expr.clone().filter(|c| !c.trim().is_empty()) {
+        let scheduler = app
+            .try_state::<Arc<crate::scheduler::PublishScheduler>>()
+            .map(|state| state.inner().clone())
+            .ok_or_else(|| "定时调度器未就绪，任务未注册，请重启应用后重试".to_string())?;
+        if let Err(error) = scheduler
+            .add_job(app.clone(), &cron, task.id.clone(), account_id.clone())
+            .await
+        {
+            // 标记失败而不是留在 pending，避免用户以为任务会执行。
+            let _ = db.update_task_status(
+                &task.id,
+                "failed",
+                Some(&format!("定时表达式无效，未注册：{}", error)),
+            );
+            return Err(format!("定时表达式无效，任务未注册：{}", error));
         }
+    } else if task.scheduled_at.is_none() {
+        // 没有 cron 也没有定时时间：界面提示「立即发布」，就必须真的发布。
+        // 之前只入库不执行，任务会永远停在 pending。
+        let app_handle = app.clone();
+        let task_id = task.id.clone();
+        let account_id_clone = account_id.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::scheduler::execute_publish(&app_handle, &task_id, &account_id_clone).await;
+        });
     }
 
     Ok(task)

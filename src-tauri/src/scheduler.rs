@@ -13,7 +13,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio_cron_scheduler::{Job, JobScheduler};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// 发布调度器
 pub struct PublishScheduler {
@@ -22,8 +22,12 @@ pub struct PublishScheduler {
 
 impl PublishScheduler {
     /// 创建并启动调度器
+    ///
+    /// `JobScheduler::new()` 只创建存储与通道，必须再调用 `start()`
+    /// 才会启动 500ms 的 tick 循环；漏掉这一步时已注册的作业永远不会触发。
     pub async fn new() -> Result<Self> {
         let scheduler = JobScheduler::new().await?;
+        scheduler.start().await?;
         info!("发布调度器已启动");
         Ok(PublishScheduler {
             scheduler: Arc::new(scheduler),
@@ -57,8 +61,57 @@ impl PublishScheduler {
     }
 }
 
+/// 启动时重建所有已存在的 cron 任务
+///
+/// 调度器的作业只存在于内存中，重启后必须按数据库里的 cron_expr 重新注册，
+/// 否则用户之前创建的定时任务会静默失效。
+pub async fn reload_jobs(
+    app: &AppHandle,
+    scheduler: &PublishScheduler,
+    db: &Db,
+) -> (usize, usize) {
+    let mut registered = 0;
+    let mut failed = 0;
+
+    let accounts = match db.list_accounts() {
+        Ok(accounts) => accounts,
+        Err(error) => {
+            error!("重建定时任务失败，读取账号出错: {}", error);
+            return (0, 0);
+        }
+    };
+
+    for account in accounts {
+        let tasks = match db.list_tasks(&account.id) {
+            Ok(tasks) => tasks,
+            Err(error) => {
+                warn!("读取账号 {} 的任务失败: {}", account.name, error);
+                continue;
+            }
+        };
+        for task in tasks {
+            let Some(cron) = task.cron_expr.clone().filter(|c| !c.trim().is_empty()) else {
+                continue;
+            };
+            match scheduler
+                .add_job(app.clone(), &cron, task.id.clone(), account.id.clone())
+                .await
+            {
+                Ok(()) => registered += 1,
+                Err(error) => {
+                    failed += 1;
+                    error!("重建定时任务 {} 失败: {}", task.id, error);
+                }
+            }
+        }
+    }
+
+    info!("定时任务重建完成：成功 {} 个，失败 {} 个", registered, failed);
+    (registered, failed)
+}
+
 /// 执行一次发布任务
-async fn execute_publish(app: &AppHandle, task_id: &str, account_id: &str) {
+pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: &str) {
     info!("定时任务触发: {}（账号 {}）", task_id, account_id);
 
     // 1. 读取任务与账号
@@ -97,8 +150,16 @@ async fn execute_publish(app: &AppHandle, task_id: &str, account_id: &str) {
     // 2. 获取账号会话页面（按代理自动启动实例）
     let sessions = app.state::<SessionRegistry>();
 
+    // 交互式登录期间不要抢占页面；这是暂态，保留任务等下一次调度重试，
+    // 不能标记失败，否则用户完成登录后任务已永久丢失。
+    if sessions.is_login_active(account_id) {
+        warn!("账号 {} 正在登录验证，跳过本次调度", account_id);
+        return;
+    }
+
     if let Err(e) = sessions.open(app, &db, &account).await {
-        fail_task(&db, task_id, &format!("打开会话失败: {}", e));
+        // 打开会话失败多为暂态（引擎未就绪、端口占用、网络），同样保留任务。
+        warn!("账号 {} 打开会话失败，跳过本次调度: {}", account_id, e);
         return;
     }
 
@@ -136,7 +197,7 @@ async fn execute_publish(app: &AppHandle, task_id: &str, account_id: &str) {
     };
 
     if sessions.is_login_active(account_id) {
-        fail_task(&db, task_id, "账号正在登录验证，未执行发布，请完成登录后重试");
+        warn!("账号 {} 登录验证中，取消本次发布（任务保留，等待下次调度）", account_id);
         return;
     }
 

@@ -27,6 +27,8 @@ async function loadTasks() {
   loading.value = true;
   try {
     tasks.value = await api.listPublishTasks(props.accountId);
+  } catch (e) {
+    message.value = `读取任务失败: ${e}`;
   } finally {
     loading.value = false;
   }
@@ -131,7 +133,12 @@ onMounted(loadTasks);
 
       <!-- 任务列表 -->
       <section class="panel">
-        <h3>任务列表</h3>
+        <div class="panel-head">
+          <h3>任务列表</h3>
+          <button class="small" :disabled="loading" @click="loadTasks">
+            {{ loading ? "刷新中..." : "刷新" }}
+          </button>
+        </div>
         <div v-if="loading" class="empty">加载中...</div>
         <div v-else-if="tasks.length === 0" class="empty">暂无任务</div>
         <table v-else class="task-table">
@@ -160,6 +167,13 @@ onMounted(loadTasks);
 </template>
 
 <style scoped>
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .workspace {
   display: flex;
   flex-direction: column;
