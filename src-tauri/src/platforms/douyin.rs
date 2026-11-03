@@ -75,11 +75,6 @@ impl PlatformAdapter for DouyinAdapter {
     }
 
     async fn check_session(&self, page: &Page) -> Result<bool> {
-        // 导航到创作者首页，若被重定向到登录页则掉号
-        page.goto(self.creator_url())
-            .await
-            .map_err(|e| anyhow::anyhow!("导航失败: {}", e))?;
-        let url = page.url().await?.unwrap_or_default();
-        Ok(!url.contains("login"))
+        super::auth::authenticated_probe(page, self.creator_url(), None).await
     }
 }

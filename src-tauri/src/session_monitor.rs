@@ -56,7 +56,7 @@ async fn check_all_sessions(app: &AppHandle) {
 
     for account in accounts.iter().filter(|a| open_ids.contains(&a.id)) {
         // 跳过已标记为掉号的账号（避免重复告警）
-        if account.status == AccountStatus::Offline {
+        if account.status != AccountStatus::Online || sessions.is_login_active(&account.id) {
             continue;
         }
 

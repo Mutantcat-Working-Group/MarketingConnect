@@ -39,11 +39,34 @@ export interface Account {
 export interface NewAccount {
   platform: string;
   name: string;
-  username: string;
+  username?: string;
   password?: string;
   proxy_url?: string;
   group_name?: string;
 }
+
+export interface UpdateAccount {
+  name: string;
+  username?: string;
+  password?: string;
+  clear_password?: boolean;
+  proxy_url?: string | null;
+  group_name?: string | null;
+}
+export const updateAccount = (id: string, input: UpdateAccount) =>
+  invoke<Account>("update_account", { id, input });
+export type LoginAction =
+  | { kind: "click"; x: number; y: number }
+  | { kind: "scroll"; x: number; y: number; delta: number }
+  | { kind: "text"; text: string }
+  | { kind: "key"; key: string };
+export const loginAction = (accountId: string, action: LoginAction) =>
+  invoke<void>("login_action", { accountId, action });
+export const setLoginActive = (accountId: string, active: boolean) =>
+  invoke<void>("set_login_active", { accountId, active });
+export interface LoginResult { authenticated: boolean; saved: boolean; message: string }
+export const finishAccountLogin = (accountId: string) =>
+  invoke<LoginResult>("finish_account_login", { accountId });
 
 /** 发布任务 */
 export interface PublishTask {

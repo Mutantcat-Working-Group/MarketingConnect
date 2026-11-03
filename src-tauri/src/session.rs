@@ -11,13 +11,13 @@
 //! 会话注册表保存在内存中（account_id → session），
 //! cookie 的持久化在 SQLite（加密），跨重启恢复。
 
+use crate::credentials::{Credentials, cookie_param, http_origin};
 use crate::db::{Account, Db};
 use crate::obscura::{CdpBrowser, CdpState, ObscuraManager};
 use crate::platforms;
 use anyhow::{Context, Result};
-use chromiumoxide::cdp::browser_protocol::network::CookieParam;
 use chromiumoxide::Page;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
@@ -28,25 +28,43 @@ pub struct AccountSession {
     pub page: Page,
     /// 所属 Obscura 实例端口（用于释放时定位）
     pub port: u16,
+    /// Only this configured platform origin may export/restore JS storage.
+    trusted_origin: Option<String>,
 }
 
 /// 会话注册表（account_id → session）
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<String, AccountSession>>,
+    interactive_logins: Mutex<HashSet<String>>,
 }
 
 impl SessionRegistry {
     pub fn new() -> Self {
         SessionRegistry {
             sessions: Mutex::new(HashMap::new()),
+            interactive_logins: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Interactive login owns navigation while active; monitors must skip it.
+    pub fn set_login_active(&self, account_id: &str, active: bool) {
+        let mut logins = self.interactive_logins.lock().unwrap();
+        if active {
+            logins.insert(account_id.to_string());
+        } else {
+            logins.remove(account_id);
+        }
+    }
+
+    pub fn is_login_active(&self, account_id: &str) -> bool {
+        self.interactive_logins.lock().unwrap().contains(account_id)
     }
 
     /// 为账号打开会话
     ///
     /// 1. 按账号代理获取/启动 Obscura 实例并建立 CDP 连接
-    /// 2. 创建独立 BrowserContext + Page（导航到平台创作者首页）
-    /// 3. 若数据库有保存的 cookie，解密后恢复到页面
+    /// 2. 创建独立 BrowserContext + about:blank 页面，先恢复 cookie
+    /// 3. 导航到平台，来源匹配时恢复 storage 并重新导航
     pub async fn open(&self, app: &AppHandle, db: &Db, account: &Account) -> Result<()> {
         // 已存在则直接返回
         if self.get_page(account.id.as_str()).is_some() {
@@ -66,17 +84,48 @@ impl SessionRegistry {
             account.name, account.platform, port
         );
 
-        // 3. 创建 context + page
-        let (context_id, page) = browser.create_context_page(&creator_url).await?;
+        // Read/decrypt before creating a context, so DB failure cannot leak a context.
+        let credentials = db.get_account_cookies(&account.id)
+            .map_err(|_| anyhow::anyhow!("读取账号凭据失败"))?
+            .and_then(|json| match Credentials::parse(&json) {
+                Ok(saved) => Some(saved),
+                Err(_) => {
+                    warn!("账号保存的凭据不可读取，跳过恢复");
+                    None
+                }
+            });
+        let trusted_origin = http_origin(&creator_url);
 
-        // 4. 恢复已保存的 cookie
-        if let Some(cookies_json) = db.get_account_cookies(&account.id)? {
-            match restore_cookies(&page, &cookies_json).await {
-                Ok(n) => info!("账号 {} 恢复了 {} 个 cookie", account.name, n),
-                Err(e) => warn!("账号 {} cookie 恢复失败: {}", account.name, e),
+        // Cookies must exist before the first request to the platform.
+        let (context_id, page) = browser.create_context_page("about:blank").await?;
+        if let Some(saved) = &credentials {
+            let count = restore_cookies(&page, saved).await;
+            info!("已恢复 {} 个 cookie", count);
+        }
+
+        let navigation = async {
+            page.goto(creator_url.as_str()).await
+                .map_err(|_| anyhow::anyhow!("平台页面导航失败"))?;
+            if let (Some(saved), Some(origin)) = (&credentials, trusted_origin.as_deref()) {
+                if saved.storage_matches(origin)
+                    && (!saved.local_storage.is_empty() || !saved.session_storage.is_empty())
+                {
+                    match restore_storage(&page, saved, origin).await {
+                        Ok(true) => {
+                            // Do not navigate to the saved URL: it is metadata, not trusted input.
+                            page.goto(creator_url.as_str()).await
+                                .map_err(|_| anyhow::anyhow!("平台页面重新导航失败"))?;
+                        }
+                        Ok(false) => warn!("页面来源不匹配，跳过 storage 恢复"),
+                        Err(_) => warn!("页面 storage 恢复失败"),
+                    }
+                }
             }
-            // 恢复后刷新页面使 cookie 生效
-            let _ = page.goto(creator_url.as_str()).await;
+            Ok::<(), anyhow::Error>(())
+        }.await;
+        if let Err(error) = navigation {
+            let _ = browser.dispose_context(&context_id).await;
+            return Err(error);
         }
 
         self.sessions
@@ -88,6 +137,7 @@ impl SessionRegistry {
                     context_id,
                     page,
                     port,
+                    trusted_origin,
                 },
             );
 
@@ -97,6 +147,7 @@ impl SessionRegistry {
     /// 关闭账号会话（释放 context）
     pub async fn close(&self, app: &AppHandle, account_id: &str) -> Result<()> {
         let session = self.sessions.lock().unwrap().remove(account_id);
+        self.set_login_active(account_id, false);
         if let Some(session) = session {
             info!("关闭账号 {} 的会话", account_id);
             // 通过端口找到对应的 CDP 连接释放 context
@@ -119,34 +170,56 @@ impl SessionRegistry {
 
     /// 导出账号当前页面的 cookie，加密存入数据库
     pub async fn export_cookies(&self, db: &Db, account_id: &str) -> Result<usize> {
-        let page = self
-            .get_page(account_id)
-            .context("账号会话不存在，无法导出 cookie")?;
+        let (page, trusted_origin) = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions.get(account_id).context("账号会话不存在，无法导出凭据")?;
+            (session.page.clone(), session.trusted_origin.clone())
+        };
 
-        let cookies = page.get_cookies().await?;
-        let json = serde_json::to_string(&cookies).context("cookie 序列化失败")?;
-        db.save_account_cookies(account_id, &json)?;
-        info!("账号 {} 导出了 {} 个 cookie", account_id, cookies.len());
-        Ok(cookies.len())
+        // Browser-wide Storage.getCookies scoping is not verified for Obscura.
+        // Network.getCookies via Page guarantees target isolation, at the cost of
+        // omitting cookies that do not match the current page/frame URLs.
+        let cookies = page.get_cookies().await
+            .map_err(|_| anyhow::anyhow!("页面 cookie 导出失败"))?;
+        let count = cookies.len();
+        let values = serde_json::to_value(&cookies)
+            .map_err(|_| anyhow::anyhow!("凭据序列化失败"))?;
+        let mut saved = Credentials::new(values.as_array().cloned().unwrap_or_default());
+        if let Some(origin) = trusted_origin {
+            match export_storage(&page, &origin).await {
+                Ok(Some(storage)) => {
+                    saved.origin = Some(storage.origin);
+                    saved.url = Some(storage.url);
+                    saved.local_storage = storage.local_storage;
+                    saved.session_storage = storage.session_storage;
+                }
+                Ok(None) => warn!("页面来源不匹配，跳过 storage 导出"),
+                Err(_) => return Err(anyhow::anyhow!("页面 storage 导出失败，未覆盖已保存凭据")),
+            }
+        }
+        db.save_account_cookies(account_id, &saved.to_json()?)
+            .map_err(|_| anyhow::anyhow!("保存账号凭据失败"))?;
+        info!("已导出 {} 个 cookie", count);
+        Ok(count)
     }
 
     /// 截取账号当前页面（PNG 字节）
     ///
     /// 用于无头模式下的登录辅助：用户查看截图完成扫码/填表登录。
-    /// 默认截取整页（full_page），适配登录页的滚动内容。
+    /// 只截取视口，确保截图坐标与页面交互坐标一致。
     pub async fn screenshot(&self, account_id: &str) -> Result<Vec<u8>> {
         let page = self
             .get_page(account_id)
             .context("账号会话不存在，无法截图")?;
 
         let params = chromiumoxide::page::ScreenshotParams::builder()
-            .full_page(true)
+            .full_page(false)
             .build();
 
         let png = page
             .screenshot(params)
             .await
-            .context("页面截图失败")?;
+            .map_err(|_| anyhow::anyhow!("页面截图失败"))?;
         Ok(png)
     }
 
@@ -196,62 +269,84 @@ pub async fn resolve_browser(
     Ok((port, browser))
 }
 
-/// 把 JSON 格式的 cookie 数组恢复到页面
-///
-/// cookie JSON 结构来自 CDP 的 `Network.getCookies` 返回值。
-/// 恢复时按每个 cookie 的 domain 构造 URL 后逐条设置。
-async fn restore_cookies(page: &Page, cookies_json: &str) -> Result<usize> {
-    #[derive(serde::Deserialize)]
-    struct SavedCookie {
-        name: String,
-        value: String,
-        domain: String,
-        #[serde(default)]
-        path: Option<String>,
-        #[serde(default)]
-        secure: Option<bool>,
-        #[serde(default)]
-        http_only: Option<bool>,
-    }
-
-    let cookies: Vec<SavedCookie> =
-        serde_json::from_str(cookies_json).context("cookie JSON 解析失败")?;
-
+/// Restore independently so an obsolete cookie does not discard all other credentials.
+async fn restore_cookies(page: &Page, saved: &Credentials) -> usize {
     let mut count = 0;
-    for c in &cookies {
-        // 按 domain 构造 URL（去掉前导点）
-        let host = c.domain.trim_start_matches('.');
-        if host.is_empty() {
-            continue;
-        }
-        let url = if c.secure.unwrap_or(false) {
-            format!("https://{}", host)
-        } else {
-            format!("http://{}", host)
-        };
-
-        let mut builder = CookieParam::builder()
-            .name(c.name.clone())
-            .value(c.value.clone())
-            .url(url);
-        if let Some(path) = &c.path {
-            builder = builder.path(path.clone());
-        }
-        if let Some(secure) = c.secure {
-            builder = builder.secure(secure);
-        }
-        if let Some(http_only) = c.http_only {
-            builder = builder.http_only(http_only);
-        }
-        let param = builder
-            .build()
-            .map_err(|e| anyhow::anyhow!("CookieParam 构建失败: {}", e))?;
-
-        if let Err(e) = page.set_cookie(param).await {
-            warn!("恢复 cookie {}.{} 失败: {}", host, c.name, e);
-        } else {
-            count += 1;
+    let mut failed = 0;
+    for cookie in &saved.cookies {
+        match cookie_param(cookie) {
+            Ok(param) => {
+                if page.set_cookie(param).await.is_ok() {
+                    count += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+            Err(_) => failed += 1,
         }
     }
-    Ok(count)
+    if failed > 0 {
+        warn!("有 {} 个 cookie 未能恢复", failed);
+    }
+    count
+}
+
+#[derive(serde::Deserialize)]
+struct PageStorage {
+    origin: String,
+    url: String,
+    local_storage: BTreeMap<String, String>,
+    session_storage: BTreeMap<String, String>,
+}
+
+async fn export_storage(page: &Page, trusted_origin: &str) -> Result<Option<PageStorage>> {
+    let origin = serde_json::to_string(trusted_origin)
+        .map_err(|_| anyhow::anyhow!("storage 来源序列化失败"))?;
+    let script = format!(r#"(() => {{
+        if (window.location.origin !== {origin}) return null;
+        const snapshot = storage => {{
+            const entries = [];
+            for (let i = 0; i < storage.length; i++) {{
+                const key = storage.key(i);
+                if (key !== null) {{
+                    const value = storage.getItem(key);
+                    if (value !== null) entries.push([key, value]);
+                }}
+            }}
+            return Object.fromEntries(entries);
+        }};
+        return {{ origin: window.location.origin, url: window.location.href,
+            local_storage: snapshot(window.localStorage),
+            session_storage: snapshot(window.sessionStorage) }};
+    }})()"#);
+    let storage: Option<PageStorage> = page.evaluate(script).await
+        .map_err(|_| anyhow::anyhow!("storage 读取失败"))?
+        .into_value().map_err(|_| anyhow::anyhow!("storage 数据格式无效"))?;
+    // Defense in depth: no credential data is included in validation errors.
+    Ok(storage.filter(|storage| storage.origin == trusted_origin
+        && http_origin(&storage.url).as_deref() == Some(trusted_origin)))
+}
+
+async fn restore_storage(page: &Page, saved: &Credentials, trusted_origin: &str) -> Result<bool> {
+    if !saved.storage_matches(trusted_origin) {
+        return Ok(false);
+    }
+    let data = serde_json::to_string(&serde_json::json!({
+        "origin": trusted_origin,
+        "local": saved.local_storage,
+        "session": saved.session_storage,
+    })).map_err(|_| anyhow::anyhow!("storage 序列化失败"))?;
+    // Parse JSON rather than a JS object literal, preserving keys such as __proto__.
+    let literal = serde_json::to_string(&data)
+        .map_err(|_| anyhow::anyhow!("storage 序列化失败"))?;
+    let script = format!(r#"(() => {{
+        const saved = JSON.parse({literal});
+        if (window.location.origin !== saved.origin) return false;
+        for (const [key, value] of Object.entries(saved.local)) window.localStorage.setItem(key, value);
+        for (const [key, value] of Object.entries(saved.session)) window.sessionStorage.setItem(key, value);
+        return true;
+    }})()"#);
+    page.evaluate(script).await
+        .map_err(|_| anyhow::anyhow!("storage 恢复失败"))?
+        .into_value().map_err(|_| anyhow::anyhow!("storage 恢复结果无效"))
 }

@@ -1,7 +1,7 @@
 {
   "name": "marketing-connect",
   "private": true,
-  "version": "1.0.20261106",
+  "version": "1.0.20261107",
   "license": "GPL-3.0",
   "type": "module",
   "scripts": {

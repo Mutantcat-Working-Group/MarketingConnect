@@ -1,25 +1,15 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Mutantcat -->
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted } from "vue";
 import * as api from "../api";
+import LoginPanel from "./LoginPanel.vue";
 
 const props = defineProps<{ accountId: string }>();
 const emit = defineEmits<{ close: [id: string] }>();
 
 const tasks = ref<api.PublishTask[]>([]);
 const loading = ref(false);
-
-// 会话状态
-const sessionOpen = ref(false);
-const sessionChecking = ref(false);
-const sessionMessage = ref("");
-
-// 页面截图（登录辅助）
-const screenshot = ref("");
-const capturing = ref(false);
-const autoRefresh = ref(false);
-let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
 // 发布表单
 const title = ref("");
@@ -39,81 +29,6 @@ async function loadTasks() {
     tasks.value = await api.listPublishTasks(props.accountId);
   } finally {
     loading.value = false;
-  }
-}
-
-async function openSession() {
-  sessionMessage.value = "";
-  try {
-    await api.openAccountSession(props.accountId);
-    sessionOpen.value = true;
-    sessionMessage.value = "会话已打开";
-    await capture();
-  } catch (e) {
-    sessionMessage.value = `打开失败: ${e}`;
-  }
-}
-
-async function closeSession() {
-  stopAutoRefresh();
-  try {
-    await api.closeAccountSession(props.accountId);
-    sessionOpen.value = false;
-    screenshot.value = "";
-    sessionMessage.value = "会话已关闭";
-  } catch (e) {
-    sessionMessage.value = `关闭失败: ${e}`;
-  }
-}
-
-async function checkSession() {
-  sessionChecking.value = true;
-  sessionMessage.value = "";
-  try {
-    const valid = await api.checkAccountSession(props.accountId);
-    sessionOpen.value = true;
-    sessionMessage.value = valid ? "会话有效" : "会话已掉线，请重新登录";
-    await capture();
-  } catch (e) {
-    sessionMessage.value = `检测失败: ${e}`;
-  } finally {
-    sessionChecking.value = false;
-  }
-}
-
-async function saveCookies() {
-  sessionMessage.value = "";
-  try {
-    const count = await api.saveAccountCookies(props.accountId);
-    sessionMessage.value = `已保存 ${count} 个 cookie（加密存储）`;
-  } catch (e) {
-    sessionMessage.value = `保存失败: ${e}`;
-  }
-}
-
-async function capture() {
-  capturing.value = true;
-  try {
-    const base64 = await api.captureScreenshot(props.accountId);
-    screenshot.value = `data:image/png;base64,${base64}`;
-  } catch (e) {
-    sessionMessage.value = `截图失败: ${e}`;
-  } finally {
-    capturing.value = false;
-  }
-}
-
-function startAutoRefresh() {
-  autoRefresh.value = true;
-  capture();
-  refreshTimer = setInterval(capture, 3000);
-}
-
-function stopAutoRefresh() {
-  autoRefresh.value = false;
-  if (refreshTimer) {
-    clearInterval(refreshTimer);
-    refreshTimer = null;
   }
 }
 
@@ -157,7 +72,6 @@ async function submitTask() {
 }
 
 onMounted(loadTasks);
-onUnmounted(stopAutoRefresh);
 </script>
 
 <template>
@@ -168,48 +82,8 @@ onUnmounted(stopAutoRefresh);
     </div>
 
     <div class="workspace-body">
-      <!-- 会话管理 -->
-      <section class="panel">
-        <h3>登录会话</h3>
-        <div class="session-bar">
-          <span class="badge" :class="sessionOpen ? 'online' : 'offline'">
-            {{ sessionOpen ? "会话已打开" : "会话未打开" }}
-          </span>
-          <div class="session-actions">
-            <button v-if="!sessionOpen" class="primary" @click="openSession">打开会话</button>
-            <template v-else>
-              <button :disabled="sessionChecking" @click="checkSession">
-                {{ sessionChecking ? "检测中..." : "检测会话" }}
-              </button>
-              <button :disabled="capturing" @click="capture">
-                {{ capturing ? "截图中..." : "刷新截图" }}
-              </button>
-              <button
-                :class="autoRefresh ? 'primary' : ''"
-                @click="autoRefresh ? stopAutoRefresh() : startAutoRefresh()"
-              >
-                {{ autoRefresh ? "停止自动刷新" : "自动刷新" }}
-              </button>
-              <button @click="saveCookies">保存 Cookie</button>
-              <button class="danger" @click="closeSession">关闭会话</button>
-            </template>
-          </div>
-        </div>
-        <p v-if="sessionMessage" class="message">{{ sessionMessage }}</p>
-
-        <!-- 页面截图（无头模式登录辅助） -->
-        <div v-if="sessionOpen" class="screenshot-area">
-          <div v-if="screenshot" class="screenshot-frame">
-            <img :src="screenshot" alt="页面截图" />
-          </div>
-          <p v-else class="screenshot-hint">
-            截图加载中... 若长时间无画面，请点击「刷新截图」
-          </p>
-          <p class="screenshot-tip">
-            提示：在下方画面中完成登录（扫码或输入帐密），登录成功后点击「保存 Cookie」持久化会话
-          </p>
-        </div>
-      </section>
+      <!-- 登录编辑与发布任务相互独立 -->
+      <LoginPanel :key="accountId" :account-id="accountId" />
 
       <!-- 新建发布任务 -->
       <section class="panel">
@@ -330,51 +204,6 @@ onUnmounted(stopAutoRefresh);
   margin-bottom: 14px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-}
-
-.session-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.session-actions {
-  display: flex;
-  gap: 8px;
-}
-
-/* 页面截图区域 */
-.screenshot-area {
-  margin-top: 14px;
-}
-
-.screenshot-frame {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: auto;
-  max-height: 480px;
-  background: #fff;
-}
-
-.screenshot-frame img {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.screenshot-hint {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 24px 0;
-  text-align: center;
-}
-
-.screenshot-tip {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 8px;
-  line-height: 1.6;
 }
 
 .form {

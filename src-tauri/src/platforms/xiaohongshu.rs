@@ -138,10 +138,6 @@ impl PlatformAdapter for XiaohongshuAdapter {
     }
 
     async fn check_session(&self, page: &Page) -> Result<bool> {
-        page.goto(CREATOR_URL)
-            .await
-            .map_err(|e| anyhow::anyhow!("导航失败: {}", e))?;
-        let url = page.url().await?.unwrap_or_default();
-        Ok(!url.contains("login"))
+        super::auth::authenticated_probe(page, self.creator_url(), None).await
     }
 }

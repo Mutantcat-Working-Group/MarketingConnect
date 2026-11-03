@@ -65,9 +65,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Run MCP unit tests (Linux)
+      - name: Run account, login, credential and MCP unit tests (Linux)
         if: matrix.platform == 'ubuntu-22.04'
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib mcp::tests
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib mcp::tests
+          cargo test --manifest-path src-tauri/Cargo.toml --lib db::account_tests
+          cargo test --manifest-path src-tauri/Cargo.toml --lib credentials::tests
+          cargo test --manifest-path src-tauri/Cargo.toml --lib login::tests
+          cargo test --manifest-path src-tauri/Cargo.toml --lib platforms::auth::tests
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0

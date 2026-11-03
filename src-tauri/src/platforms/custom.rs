@@ -6,7 +6,7 @@
 //! 表单选择器），通用适配器按配置驱动：
 //! - 登录：导航到创作者首页，用户通过截图辅助手动登录
 //! - 发布：导航到发布页，按选择器填充标题/内容并提交
-//! - 会话检测：导航到创作者首页，按 URL 特征判断登录态
+//! - 会话检测：不导航，检查同源已登录 UI 或显式配置的非空 URL 特征
 
 use super::{PlatformAdapter, PublishContent};
 use anyhow::{Context, Result};
@@ -30,7 +30,7 @@ pub struct CustomPlatform {
     pub content_selector: Option<String>,
     /// 提交按钮选择器（可选）
     pub submit_selector: Option<String>,
-    /// 登录态 URL 特征（登录后 URL 包含该字符串；为空则用 "不含 login" 启发式）
+    /// 显式登录态 URL 路由特征（仅同源非空匹配；未配置时需可见已登录 UI）
     pub logged_in_pattern: Option<String>,
 }
 
@@ -114,17 +114,10 @@ impl PlatformAdapter for CustomPlatformAdapter {
     }
 
     async fn check_session(&self, page: &Page) -> Result<bool> {
-        page.goto(self.config.creator_url.as_str())
-            .await
-            .context("导航到创作者首页失败")?;
-        let url = page.url().await?.unwrap_or_default();
-
-        // 配置了登录特征：URL 包含即有效
-        if let Some(pattern) = &self.config.logged_in_pattern {
-            Ok(url.contains(pattern.as_str()))
-        } else {
-            // 默认启发式：URL 不含 login 即视为有效
-            Ok(!url.contains("login"))
-        }
+        super::auth::authenticated_probe(
+            page,
+            self.creator_url(),
+            self.config.logged_in_pattern.as_deref(),
+        ).await
     }
 }

@@ -162,12 +162,14 @@ function onAccountDeleted(id: string) {
 }
 
 onMounted(async () => {
+  window.addEventListener("accounts-changed", loadAccounts);
   await Promise.all([loadAccounts(), loadEngine(), loadLogs()]);
   window.addEventListener("keydown", onKeydown);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
+  window.removeEventListener("accounts-changed", loadAccounts);
 });
 </script>
 

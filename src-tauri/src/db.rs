@@ -59,10 +59,29 @@ pub struct Account {
 pub struct NewAccount {
     pub platform: String,
     pub name: String,
+    #[serde(default)]
     pub username: String,
     pub password: Option<String>,
     pub proxy_url: Option<String>,
     pub group_name: Option<String>,
+}
+
+/// 修改账号输入。平台不可变；空密码保留原值，显式清除优先。
+#[derive(Clone, Deserialize)]
+pub struct UpdateAccount {
+    pub name: String,
+    #[serde(default)]
+    pub username: String,
+    pub password: Option<String>,
+    #[serde(default)]
+    pub clear_password: bool,
+    pub proxy_url: Option<String>,
+    pub group_name: Option<String>,
+}
+
+/// 统一可选文本字段，空白表示清除。
+pub(crate) fn normalize_account_field(value: Option<&str>) -> Option<String> {
+    value.map(str::trim).filter(|s| !s.is_empty()).map(String::from)
 }
 
 /// 发布任务
@@ -191,6 +210,18 @@ impl Db {
 
     /// 新增账号（密码加密存储）
     pub fn create_account(&self, input: &NewAccount) -> Result<Account> {
+        anyhow::ensure!(!input.name.trim().is_empty(), "备注名称不能为空");
+        let supported = crate::platforms::is_builtin_platform_id(&input.platform)
+            || self.list_custom_platforms()?.iter().any(|p| p.id == input.platform);
+        anyhow::ensure!(supported, "不支持的平台");
+        let input = NewAccount {
+            platform: input.platform.clone(),
+            name: input.name.trim().to_string(),
+            username: input.username.trim().to_string(),
+            password: input.password.clone(),
+            proxy_url: normalize_account_field(input.proxy_url.as_deref()),
+            group_name: normalize_account_field(input.group_name.as_deref()),
+        };
         let conn = self.conn.lock().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp();
@@ -228,6 +259,52 @@ impl Db {
             created_at: now,
             updated_at: now,
         })
+    }
+
+    /// 修改账号；不读取/解密旧密码，空密码保留原加密字节。
+    pub fn update_account(&self, id: &str, input: &UpdateAccount) -> Result<Account> {
+        anyhow::ensure!(!input.name.trim().is_empty(), "备注名称不能为空");
+        let proxy_url = normalize_account_field(input.proxy_url.as_deref());
+        let group_name = normalize_account_field(input.group_name.as_deref());
+        let replace_password = input.clear_password
+            || input.password.as_deref().is_some_and(|p| !p.is_empty());
+        let password_enc = if input.clear_password {
+            None
+        } else {
+            match input.password.as_deref().filter(|p| !p.is_empty()) {
+                Some(password) => Some(super::crypto::encrypt_str(password)?),
+                None => None,
+            }
+        };
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        let changed = conn.execute(
+            "UPDATE accounts SET name = ?1, username = ?2,
+                password_enc = CASE WHEN ?3 THEN ?4 ELSE password_enc END,
+                status = CASE WHEN proxy_url IS NOT ?5 THEN 'offline' ELSE status END,
+                last_check_at = CASE WHEN proxy_url IS NOT ?5 THEN NULL ELSE last_check_at END,
+                proxy_url = ?5, group_name = ?6, updated_at = ?7 WHERE id = ?8",
+            params![input.name.trim(), input.username.trim(), replace_password,
+                password_enc, proxy_url, group_name, now, id],
+        ).context("更新账号失败")?;
+        anyhow::ensure!(changed > 0, "账号不存在");
+        conn.query_row(
+            "SELECT id, platform, name, username, proxy_url, group_name, status,
+                    last_check_at, created_at, updated_at FROM accounts WHERE id = ?1",
+            params![id],
+            |row| Ok(Account {
+                id: row.get(0)?,
+                platform: row.get(1)?,
+                name: row.get(2)?,
+                username: row.get(3)?,
+                proxy_url: row.get(4)?,
+                group_name: row.get(5)?,
+                status: AccountStatus::from_str(&row.get::<_, String>(6)?),
+                last_check_at: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            }),
+        ).context("读取更新后的账号失败")
     }
 
     /// 列出所有账号
@@ -283,9 +360,10 @@ impl Db {
             .query_row(
                 "SELECT password_enc FROM accounts WHERE id = ?1",
                 params![id],
-                |row| row.get(0),
+                |row| row.get::<_, Option<Vec<u8>>>(0),
             )
-            .optional()?;
+            .optional()?
+            .flatten();
         match enc {
             Some(bytes) => Ok(Some(super::crypto::decrypt_str(&bytes)?)),
             None => Ok(None),
@@ -311,9 +389,10 @@ impl Db {
             .query_row(
                 "SELECT cookies_enc FROM accounts WHERE id = ?1",
                 params![id],
-                |row| row.get(0),
+                |row| row.get::<_, Option<Vec<u8>>>(0),
             )
-            .optional()?;
+            .optional()?
+            .flatten();
         match enc {
             Some(bytes) => Ok(Some(super::crypto::decrypt_str(&bytes)?)),
             None => Ok(None),
@@ -578,5 +657,128 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM custom_platforms WHERE id = ?1", params![id])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+
+    fn db() -> Db {
+        let db = Db {
+            conn: Mutex::new(Connection::open_in_memory().unwrap()),
+        };
+        db.migrate().unwrap();
+        db
+    }
+
+    fn new_account() -> NewAccount {
+        serde_json::from_value(serde_json::json!({
+            "platform": "douyin", "name": "测试账号"
+        }))
+        .unwrap()
+    }
+
+    fn edit() -> UpdateAccount {
+        serde_json::from_value(serde_json::json!({
+            "name": "修改后的名称", "username": ""
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn creates_account_without_credentials_and_reads_nullable_secrets() {
+        let db = db();
+        let account = db.create_account(&new_account()).unwrap();
+        assert_eq!(account.username, "");
+        assert_eq!(db.get_account_password(&account.id).unwrap(), None);
+        assert_eq!(db.get_account_cookies(&account.id).unwrap(), None);
+        assert_eq!(db.get_account_password("missing").unwrap(), None);
+        assert_eq!(db.get_account_cookies("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn rejects_blank_name_and_unknown_platform() {
+        let db = db();
+        let mut input = new_account();
+        input.name = "  ".into();
+        assert!(db.create_account(&input).is_err());
+        input.name = "名称".into();
+        input.platform = "unknown".into();
+        assert!(db.create_account(&input).is_err());
+        assert!(db.list_accounts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn edits_metadata_preserve_password_platform_and_session_status() {
+        let db = db();
+        let original = db.create_account(&new_account()).unwrap();
+        db.update_account_status(&original.id, AccountStatus::Online).unwrap();
+        // 使用不透明字节验证保留行为，不访问操作系统 keyring。
+        let opaque_password = vec![1_u8, 2, 3];
+        db.conn.lock().unwrap().execute(
+            "UPDATE accounts SET password_enc = ?1 WHERE id = ?2",
+            params![opaque_password, original.id],
+        ).unwrap();
+        for password in [None, Some(String::new())] {
+            let mut input = edit();
+            input.password = password;
+            input.group_name = Some("矩阵A组".into());
+            let updated = db.update_account(&original.id, &input).unwrap();
+            assert_eq!(updated.name, "修改后的名称");
+            assert_eq!(updated.platform, original.platform);
+            assert_eq!(updated.status, AccountStatus::Online);
+            assert_eq!(updated.group_name.as_deref(), Some("矩阵A组"));
+            assert_eq!(updated.created_at, original.created_at);
+            let stored: Vec<u8> = db.conn.lock().unwrap().query_row(
+                "SELECT password_enc FROM accounts WHERE id = ?1",
+                params![original.id], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(stored, opaque_password);
+        }
+    }
+
+    #[test]
+    fn explicit_password_clear_takes_precedence_without_keyring_access() {
+        let db = db();
+        let account = db.create_account(&new_account()).unwrap();
+        db.conn.lock().unwrap().execute(
+            "UPDATE accounts SET password_enc = X'010203' WHERE id = ?1",
+            params![account.id],
+        ).unwrap();
+        let mut input = edit();
+        input.clear_password = true;
+        input.password = Some("ignored when clearing".into());
+        db.update_account(&account.id, &input).unwrap();
+        assert_eq!(db.get_account_password(&account.id).unwrap(), None);
+    }
+
+    #[test]
+    fn proxy_change_resets_status_and_clears_optional_fields() {
+        let db = db();
+        let account = db.create_account(&new_account()).unwrap();
+        db.update_account_status(&account.id, AccountStatus::Online).unwrap();
+        let mut input = edit();
+        input.proxy_url = Some(" socks5://127.0.0.1:1080 ".into());
+        let updated = db.update_account(&account.id, &input).unwrap();
+        assert_eq!(updated.proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+        assert_eq!(updated.status, AccountStatus::Offline);
+        assert_eq!(updated.last_check_at, None);
+        input.proxy_url = Some("  ".into());
+        input.group_name = Some("  ".into());
+        let updated = db.update_account(&account.id, &input).unwrap();
+        assert_eq!(updated.proxy_url, None);
+        assert_eq!(updated.group_name, None);
+    }
+
+    #[test]
+    fn update_rejects_blank_name_and_missing_account() {
+        let db = db();
+        let account = db.create_account(&new_account()).unwrap();
+        let mut input = edit();
+        input.name = "  ".into();
+        assert!(db.update_account(&account.id, &input).is_err());
+        assert_eq!(db.list_accounts().unwrap()[0].name, account.name);
+        assert!(db.update_account("missing", &edit()).is_err());
     }
 }

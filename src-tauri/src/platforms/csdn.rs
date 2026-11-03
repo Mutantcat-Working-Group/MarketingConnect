@@ -144,10 +144,6 @@ impl PlatformAdapter for CsdnAdapter {
     }
 
     async fn check_session(&self, page: &Page) -> Result<bool> {
-        page.goto(CREATOR_URL)
-            .await
-            .map_err(|e| anyhow::anyhow!("导航失败: {}", e))?;
-        let url = page.url().await?.unwrap_or_default();
-        Ok(!is_login_page(&url))
+        super::auth::authenticated_probe(page, self.creator_url(), None).await
     }
 }

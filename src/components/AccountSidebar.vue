@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Mutantcat -->
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, nextTick } from "vue";
 import * as api from "../api";
 import type { MenuItem } from "../menu";
 import ContextMenu from "./ContextMenu.vue";
@@ -20,9 +20,12 @@ const emit = defineEmits<{
 const platforms = ref<api.PlatformInfo[]>([]);
 const showForm = ref(false);
 const saving = ref(false);
+const editingId = ref<string | null>(null);
+const formError = ref("");
+const clearPassword = ref(false);
 
-// 新增账号表单
-const form = ref<api.NewAccount>({
+// 密码仅用于本次提交，编辑时始终为空。
+const form = ref({
   platform: "douyin",
   name: "",
   username: "",
@@ -61,37 +64,93 @@ function platformName(id: string): string {
 }
 
 async function loadPlatforms() {
-  platforms.value = await api.listPlatforms();
+  try {
+    platforms.value = await api.listPlatforms();
+  } catch {
+    notify("加载平台失败，请重试");
+  }
+}
+
+function closeForm() {
+  if (saving.value) return;
+  showForm.value = false;
+  editingId.value = null;
+  form.value.password = "";
+  clearPassword.value = false;
+  formError.value = "";
+}
+
+async function editAccount(account: api.Account) {
+  if (saving.value) return;
+  editingId.value = account.id;
+  form.value = {
+    platform: account.platform,
+    name: account.name,
+    username: account.username,
+    password: "",
+    proxy_url: account.proxy_url ?? "",
+    group_name: account.group_name ?? "",
+  };
+  clearPassword.value = false;
+  formError.value = "";
+  showForm.value = true;
+  await nextTick();
+  document.querySelector<HTMLInputElement>(".add-form input")?.focus();
 }
 
 async function submit() {
-  if (!form.value.name.trim() || !form.value.username.trim()) {
+  formError.value = "";
+  if (!form.value.name.trim()) {
+    formError.value = "请填写备注名称";
     return;
   }
+  if (!editingId.value && !platforms.value.some((p) => p.id === form.value.platform)) {
+    formError.value = "请选择可用的平台";
+    return;
+  }
+  if (saving.value) return;
   saving.value = true;
+  const wasEditing = editingId.value !== null;
   try {
-    await api.createAccount({
-      platform: form.value.platform,
+    const input = {
       name: form.value.name.trim(),
       username: form.value.username.trim(),
-      password: form.value.password || undefined,
-      proxy_url: form.value.proxy_url || undefined,
-      group_name: form.value.group_name?.trim() || undefined,
-    });
+      password: clearPassword.value ? undefined : form.value.password || undefined,
+      proxy_url: form.value.proxy_url.trim() || undefined,
+      group_name: form.value.group_name.trim() || undefined,
+    };
+    if (editingId.value) {
+      await api.updateAccount(editingId.value, { ...input, clear_password: clearPassword.value });
+    } else {
+      await api.createAccount({ ...input, platform: form.value.platform });
+    }
     form.value = { platform: form.value.platform, name: "", username: "", password: "", proxy_url: "", group_name: "" };
+    editingId.value = null;
+    clearPassword.value = false;
     showForm.value = false;
+    notify(wasEditing ? "账号已更新" : "账号已创建，可打开工作台登录");
+    emit("refresh");
+  } catch {
+    // 不拼接后端错误，避免敏感输入被异常文本回显。
+    formError.value = "保存失败，请检查输入后重试";
     emit("refresh");
   } finally {
+    form.value.password = "";
     saving.value = false;
   }
 }
 
 async function remove(id: string) {
   const account = props.accounts.find((a) => a.id === id);
-  await api.deleteAccount(id);
-  notify(`已删除「${account?.name ?? id}」`);
-  emit("deleted", id);
-  emit("refresh");
+  try {
+    await api.deleteAccount(id);
+    if (editingId.value === id) closeForm();
+    notify(`已删除「${account?.name ?? id}」`);
+    emit("deleted", id);
+    emit("refresh");
+  } catch {
+    notify("删除失败，请重试");
+  }
 }
 
 /** 复制到剪贴板（webview 下 clipboard API 可能不可用，退回 execCommand） */
@@ -146,6 +205,7 @@ const menuItems = computed<MenuItem[]>(() => {
   const items: MenuItem[] = [
     { label: "打开工作台", shortcut: "Enter", action: () => emit("select", a.id) },
     { label: "检测会话", action: () => checkSession(a) },
+    { label: "编辑账号", action: () => editAccount(a) },
     { divider: true },
     { label: "复制备注名", action: () => copyText(a.name) },
     { label: "复制登录账号", action: () => copyText(a.username) },
@@ -169,8 +229,13 @@ const menuItems = computed<MenuItem[]>(() => {
 
 /** 供全局快捷键调用：展开新增表单并聚焦第一个输入 */
 async function openForm() {
+  if (saving.value) return;
+  editingId.value = null;
+  form.value = { platform: platforms.value.some((p) => p.id === form.value.platform) ? form.value.platform : platforms.value[0]?.id ?? "douyin", name: "", username: "", password: "", proxy_url: "", group_name: "" };
+  clearPassword.value = false;
+  formError.value = "";
   showForm.value = true;
-  await new Promise((r) => setTimeout(r, 0));
+  await nextTick();
   const first = document.querySelector<HTMLInputElement>(".add-form input");
   first?.focus();
 }
@@ -189,25 +254,33 @@ loadPlatforms();
   <aside class="sidebar">
     <div class="sidebar-header">
       <span>账号管理</span>
-      <button class="primary add-btn" title="新增账号（Ctrl/⌘ + N）" @click="showForm = !showForm">
+      <button class="primary add-btn" :disabled="saving" title="新增账号（Ctrl/⌘ + N）" @click="showForm ? closeForm() : openForm()">
         {{ showForm ? "取消" : "+ 新增" }}
       </button>
     </div>
 
-    <!-- 新增账号表单 -->
-    <div v-if="showForm" class="add-form">
-      <select v-model="form.platform">
+    <!-- 新建/编辑共用表单；从不读取或展示已保存的密码。 -->
+    <form v-if="showForm" class="add-form" @submit.prevent="submit">
+      <strong class="form-title">{{ editingId ? "编辑账号" : "新增账号" }}</strong>
+      <select v-model="form.platform" aria-label="平台" :disabled="!!editingId || saving">
+        <option v-if="editingId && !platforms.some((p) => p.id === form.platform)" :value="form.platform">{{ platformName(form.platform) }}</option>
         <option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</option>
       </select>
-      <input v-model="form.name" placeholder="备注名称" />
-      <input v-model="form.username" placeholder="登录账号（手机号/用户名）" />
-      <input v-model="form.password" type="password" placeholder="登录密码（加密存储）" />
-      <input v-model="form.proxy_url" placeholder="代理地址（可选，如 socks5://...）" />
-      <input v-model="form.group_name" placeholder="分组（可选，如：矩阵A组）" />
-      <button class="primary" :disabled="saving" @click="submit">
-        {{ saving ? "保存中..." : "保存账号" }}
+      <input v-model="form.name" aria-label="备注名称" placeholder="备注名称（必填）" :disabled="saving" required />
+      <input v-model="form.username" aria-label="登录账号（可选）" placeholder="登录账号（可选，手机号/用户名）" autocomplete="off" :disabled="saving" />
+      <input v-model="form.password" aria-label="登录密码（可选）" type="password" :placeholder="editingId ? '新密码（留空保留原密码）' : '登录密码（可选，加密存储）'" autocomplete="new-password" :disabled="saving || clearPassword" />
+      <label v-if="editingId" class="clear-password">
+        <input v-model="clearPassword" type="checkbox" :disabled="saving" @change="form.password = ''" />
+        清除已保存密码
+      </label>
+      <input v-model="form.proxy_url" aria-label="代理地址（可选）" placeholder="代理地址（可选，如 socks5://...）" :disabled="saving" />
+      <input v-model="form.group_name" aria-label="分组（可选）" placeholder="分组（可选，如：矩阵A组）" :disabled="saving" />
+      <p class="form-hint">{{ editingId ? "平台不可更改；修改代理将关闭当前会话。" : "可仅填备注名，创建后在工作台扫码或手动登录。" }}</p>
+      <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
+      <button class="primary" type="submit" :disabled="saving">
+        {{ saving ? "保存中..." : editingId ? "保存修改" : "保存账号" }}
       </button>
-    </div>
+    </form>
 
     <!-- 账号列表 -->
     <div class="account-list">
@@ -233,7 +306,7 @@ loadPlatforms();
         >
           <div class="account-info">
             <div class="account-name">{{ a.name }}</div>
-            <div class="account-username">{{ a.username }}</div>
+            <div class="account-username">{{ a.username || "未填写登录账号" }}</div>
           </div>
           <div class="account-meta">
             <span class="platform-tag">{{ platformName(a.platform) }}</span>
@@ -293,6 +366,36 @@ loadPlatforms();
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-tertiary);
+}
+
+.form-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.clear-password {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.clear-password input {
+  width: auto;
+  margin: 0;
+}
+
+.form-hint,
+.form-error {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.form-error {
+  color: var(--danger);
 }
 
 .account-list {

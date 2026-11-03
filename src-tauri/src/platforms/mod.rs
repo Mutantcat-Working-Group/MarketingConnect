@@ -15,6 +15,7 @@ use crate::db::Db;
 use anyhow::Result;
 use async_trait::async_trait;
 
+pub(crate) mod auth;
 mod csdn;
 mod custom;
 mod douyin;

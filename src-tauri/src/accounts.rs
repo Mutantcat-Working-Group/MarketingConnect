@@ -116,6 +116,10 @@ pub async fn check_account_session(
         .get_page(&account_id)
         .ok_or("会话打开失败")?;
 
+    if sessions.is_login_active(&account_id) {
+        return Err("正在交互登录，请在登录面板点击确认登录并保存".into());
+    }
+
     // 调用平台适配器检测会话
     let valid = match crate::platforms::find_adapter(&account.platform, Some(&db)) {
         Some(adapter) => adapter
@@ -142,7 +146,7 @@ pub async fn check_account_session(
     );
 
     // 掉号时发送系统通知 + 短信提醒
-    if !valid {
+    if !valid && account.status == AccountStatus::Online {
         let _ = app
             .notification()
             .builder()

@@ -5,6 +5,9 @@
 //! 架构：Tauri 2 (Rust) + Vue 3 前端 + Obscura 无头浏览器引擎
 
 mod accounts;
+mod account_edit;
+mod credentials;
+mod login;
 mod crypto;
 mod db;
 mod mcp;
@@ -83,6 +86,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             accounts::list_accounts,
             accounts::create_account,
+            account_edit::update_account,
             accounts::delete_account,
             accounts::start_engine,
             accounts::stop_engine,
@@ -92,6 +96,9 @@ pub fn run() {
             accounts::check_account_session,
             accounts::save_account_cookies,
             accounts::capture_screenshot,
+            login::set_login_active,
+            login::login_action,
+            login::finish_account_login,
             accounts::create_publish_task,
             accounts::batch_publish,
             accounts::list_publish_tasks,
