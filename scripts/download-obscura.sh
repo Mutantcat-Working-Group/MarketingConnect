@@ -16,33 +16,50 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BIN_DIR="$PROJECT_DIR/src-tauri/binaries"
 RELEASE_BASE="https://github.com/h4ckf0r0day/obscura/releases/latest/download"
 
-# 检测平台（含 Windows 的 Git Bash / MSYS / Cygwin 环境）
-OS="$(uname -s)"
-ARCH="$(uname -m)"
+# 目标三元组：可用 OBSCURA_TARGET 或第一个参数显式指定（交叉编译时必需），
+# 否则按当前宿主平台推断。
+TRIPLE="${OBSCURA_TARGET:-${1:-}}"
 
-case "$OS" in
-  Darwin)
-    case "$ARCH" in
-      arm64)  TRIPLE="aarch64-apple-darwin"; ASSET="obscura-aarch64-macos.tar.gz"; EXT="" ;;
-      x86_64) TRIPLE="x86_64-apple-darwin";  ASSET="obscura-x86_64-macos.tar.gz";  EXT="" ;;
-      *) echo "不支持的架构: $ARCH"; exit 1 ;;
-    esac
-    ;;
-  Linux)
-    case "$ARCH" in
-      x86_64)  TRIPLE="x86_64-unknown-linux-gnu";  ASSET="obscura-x86_64-linux.tar.gz";  EXT="" ;;
-      aarch64) TRIPLE="aarch64-unknown-linux-gnu"; ASSET="obscura-aarch64-linux.tar.gz"; EXT="" ;;
-      *) echo "不支持的架构: $ARCH"; exit 1 ;;
-    esac
-    ;;
-  MINGW*|MSYS*|CYGWIN*|Windows_NT)
-    # Git Bash / MSYS2 / Cygwin on Windows
-    TRIPLE="x86_64-pc-windows-msvc"
-    ASSET="obscura-x86_64-windows.zip"
-    EXT=".exe"
-    ;;
+if [ -z "$TRIPLE" ]; then
+  # 检测平台（含 Windows 的 Git Bash / MSYS / Cygwin 环境）
+  OS="$(uname -s)"
+  ARCH="$(uname -m)"
+  case "$OS" in
+    Darwin)
+      case "$ARCH" in
+        arm64)  TRIPLE="aarch64-apple-darwin" ;;
+        x86_64) TRIPLE="x86_64-apple-darwin" ;;
+      esac
+      ;;
+    Linux)
+      case "$ARCH" in
+        x86_64)  TRIPLE="x86_64-unknown-linux-gnu" ;;
+        aarch64) TRIPLE="aarch64-unknown-linux-gnu" ;;
+      esac
+      ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      TRIPLE="x86_64-pc-windows-msvc"
+      ;;
+    *)
+      echo "不支持的操作系统: $OS" >&2
+      exit 1
+      ;;
+  esac
+  if [ -z "$TRIPLE" ]; then
+    echo "不支持的架构: $ARCH" >&2
+    exit 1
+  fi
+fi
+
+case "$TRIPLE" in
+  aarch64-apple-darwin)        ASSET="obscura-aarch64-macos.tar.gz"; EXT="" ;;
+  x86_64-apple-darwin)         ASSET="obscura-x86_64-macos.tar.gz";  EXT="" ;;
+  x86_64-unknown-linux-gnu)    ASSET="obscura-x86_64-linux.tar.gz";  EXT="" ;;
+  aarch64-unknown-linux-gnu)   ASSET="obscura-aarch64-linux.tar.gz"; EXT="" ;;
+  x86_64-pc-windows-msvc)      ASSET="obscura-x86_64-windows.zip";   EXT=".exe" ;;
   *)
-    echo "不支持的操作系统: $OS"
+    echo "Obscura 未提供该目标平台的二进制: $TRIPLE" >&2
+    echo "（上游仅发布 macOS x86_64/aarch64、Linux x86_64/aarch64、Windows x86_64）" >&2
     exit 1
     ;;
 esac

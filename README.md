@@ -76,16 +76,20 @@
 
 ### 三、安装与下载
 
-从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包：
+从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包（每个平台提供两种架构，文件名里带架构后缀）：
 
-- macOS：`MarketingConnect_1.0.20261109_aarch64.dmg`
-- Windows：`MarketingConnect_1.0.20261109_x64-setup.exe`
-- Linux：`MarketingConnect_1.0.20261109_amd64.AppImage`
+- macOS Apple Silicon（M 系列）：`MarketingConnect_1.0.20261110_aarch64.dmg`
+- macOS Intel（x64）：`MarketingConnect_1.0.20261110_x64.dmg`
+- Windows x64：`MarketingConnect_1.0.20261110_x64-setup.exe`
+- Linux x64：`MarketingConnect_1.0.20261110_amd64.AppImage`
+- Linux arm64：`MarketingConnect_1.0.20261110_aarch64.AppImage`
+
+> Windows 目前只提供 x64 包：内置浏览器引擎 Obscura 上游尚未发布 Windows arm64 二进制，缺少它会导致登录/发布功能不可用，因此没有发布无法工作的 arm64 安装包。Windows on ARM 上可运行 x64 包（系统自带 x64 兼容层）。
 
 > 安装后的软件名为中文「**营销通**」（macOS 的 `营销通.app`、Windows 的安装目录与开始菜单快捷方式、Linux 的桌面项）。
 > 下载文件名用 ASCII 的 `MarketingConnect`，是因为 GitHub Releases 会自动剥离资源名中的非 ASCII 字符。
 
-源码自编译需 Node.js 20+、pnpm 9+、Rust 1.75+，Linux 需 `libwebkit2gtk-4.1-dev` 等 Tauri 系统依赖；推送到 main 或打 v* 标签时 GitHub Actions 自动构建三平台安装包。
+源码自编译需 Node.js 20+、pnpm 9+、Rust 1.75+，Linux 需 `libwebkit2gtk-4.1-dev` 等 Tauri 系统依赖；推送到 main 或打 v* 标签时 GitHub Actions 自动构建各平台各架构安装包（macOS x86_64/aarch64、Linux x86_64/aarch64 交叉或原生编译）。交叉编译时用 `OBSCURA_TARGET=<目标三元组> ./scripts/download-obscura.sh` 指定引擎架构。
 
 ### 四、快速上手
 

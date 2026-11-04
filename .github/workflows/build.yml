@@ -7,25 +7,60 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 提前创建 release，避免多个矩阵任务并发抢建同一个 release 而报 already_exists
+  prepare:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1 \
+            || gh release create "${{ github.ref_name }}" \
+                 --repo "${{ github.repository }}" \
+                 --title "营销通 ${{ github.ref_name }}" \
+                 --notes "自动构建：营销通 ${{ github.ref_name }}"
+
   build:
+    needs: prepare
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          # macOS：仅 dmg，ad-hoc 签名（无开发者证书）
+          # macOS Apple Silicon（原生 arm64 机器）
           - platform: macos-latest
+            target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin --bundles dmg"
             apple_signing_identity: "-"
-          # Windows：仅 NSIS（.exe 安装包）
+            run_tests: false
+          # macOS Intel（在 arm64 机器上交叉编译）
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin --bundles dmg"
+            apple_signing_identity: "-"
+            run_tests: false
+          # Windows x64（上游 Obscura 引擎暂无 arm64 Windows 构建）
           - platform: windows-latest
-            args: "--bundles nsis"
+            target: x86_64-pc-windows-msvc
+            args: "--target x86_64-pc-windows-msvc --bundles nsis"
             apple_signing_identity: ""
-          # Linux：仅 AppImage
+            run_tests: false
+          # Linux x64
           - platform: ubuntu-22.04
-            args: "--bundles appimage"
+            target: x86_64-unknown-linux-gnu
+            args: "--target x86_64-unknown-linux-gnu --bundles appimage"
             apple_signing_identity: ""
+            run_tests: true
+          # Linux arm64（原生 arm64 机器）
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            args: "--target aarch64-unknown-linux-gnu --bundles appimage"
+            apple_signing_identity: ""
+            run_tests: false
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -45,34 +80,39 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
+          key: ${{ matrix.target }}
 
       - name: Install frontend dependencies
         run: pnpm install
 
+      # 交叉编译时按目标三元组取对应引擎，而不是按宿主架构
       - name: Download Obscura sidecar
         shell: bash
+        env:
+          OBSCURA_TARGET: ${{ matrix.target }}
         run: ./scripts/download-obscura.sh
 
       - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        # 覆盖 x64 与 arm64 两种 ubuntu runner
+        if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Run account, login, credential and MCP unit tests (Linux)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.run_tests
         run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --lib mcp::tests
-          cargo test --manifest-path src-tauri/Cargo.toml --lib db::account_tests
-          cargo test --manifest-path src-tauri/Cargo.toml --lib credentials::tests
-          cargo test --manifest-path src-tauri/Cargo.toml --lib login::tests
-          cargo test --manifest-path src-tauri/Cargo.toml --lib platforms::auth::tests
+          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib mcp::tests
+          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib db::account_tests
+          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib credentials::tests
+          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib login::tests
+          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib platforms::auth::tests
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
@@ -89,14 +129,15 @@ jobs:
       # 验证 dmg 内的 app 确实带 ad-hoc 签名（未签名则 codesign 报错，步骤失败）
       # 注意：tauri 打完 dmg 后会 Cleaning 掉中间 .app，只能从 dmg 内验证
       - name: Verify ad-hoc signature (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
         run: |
-          DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg 2>/dev/null | head -1)
+          DMG=$(ls "src-tauri/target/${{ matrix.target }}/release/bundle/dmg/"*.dmg 2>/dev/null | head -1)
           if [ -z "$DMG" ] || [ ! -f "$DMG" ]; then
-            echo "::error::找不到 dmg（bundle/dmg/*.dmg）"
+            echo "::error::找不到 dmg（${{ matrix.target }}/release/bundle/dmg/*.dmg）"
             exit 1
           fi
+          echo "=== dmg: $DMG ==="
           MOUNT=$(mktemp -d)
           hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -quiet
           # app 名为 productName（现为中文「营销通」），用 glob 避免写死
@@ -107,6 +148,20 @@ jobs:
             exit 1
           fi
           echo "=== app 名称: $(basename "$APP") ==="
+          # 架构必须与目标一致，避免交叉编译产出错架构的包
+          echo "=== 可执行文件架构 ==="
+          lipo -archs "$APP/Contents/MacOS/marketingconnect"
+          BIN_ARCHS=$(lipo -archs "$APP/Contents/MacOS/marketingconnect")
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) EXPECT="arm64" ;;
+            x86_64-apple-darwin)  EXPECT="x86_64" ;;
+            *) EXPECT="" ;;
+          esac
+          if [ -n "$EXPECT" ] && [ "$BIN_ARCHS" != "$EXPECT" ]; then
+            echo "::error::架构不符合预期：实际 $BIN_ARCHS，期望 $EXPECT"
+            hdiutil detach "$MOUNT" -quiet || true
+            exit 1
+          fi
           echo "=== 签名信息 ==="
           codesign -dvv "$APP" 2>&1 || true
           echo "=== 签名校验 ==="
@@ -151,6 +206,28 @@ jobs:
           done
           echo "=== 规范化后的资产 ==="
           ls -1
+
+      # 每个平台都必须有各自架构的产物，缺一即失败
+      - name: Verify all architecture artifacts exist
+        shell: bash
+        run: |
+          cd assets
+          missing=0
+          for pattern in \
+            "*aarch64.dmg" "*x64.dmg" \
+            "*x64-setup.exe" \
+            "*amd64.AppImage" "*aarch64.AppImage"
+          do
+            if ! ls $pattern >/dev/null 2>&1; then
+              echo "::error::缺少产物: $pattern"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "现有资产："; ls -1
+            exit 1
+          fi
+          echo "=== 架构覆盖检查通过 ==="
 
       - name: Generate checksum-sha1 / checksum-md5
         shell: bash
