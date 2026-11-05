@@ -89,6 +89,15 @@ impl CdpBrowser {
             .context("释放 BrowserContext 失败")?;
         Ok(())
     }
+
+    /// 连接是否仍然可用
+    ///
+    /// handler 任务在 WebSocket 出错（引擎被停止、崩溃、连接被重置）时退出，
+    /// 因此任务结束即代表这条连接已经不可用。用它判断可以避免复用
+    /// 已断开的连接（复用会表现为新建页面/导航凭空失败）。
+    pub fn is_alive(&self) -> bool {
+        !self._handler_task.is_finished()
+    }
 }
 
 /// 全局 CDP 连接状态（Tauri managed state）
@@ -117,9 +126,16 @@ impl CdpState {
     }
 
     /// 获取或建立指定端口的 CDP 连接
+    ///
+    /// 缓存里的连接若已断开（引擎被停止或崩溃）会被丢弃并重新连接，
+    /// 否则后续操作会复用一条死连接而凭空失败。
     pub async fn get_or_connect(&self, port: u16, ws_url: &str) -> Result<Arc<CdpBrowser>> {
-        if let Some(b) = self.get(port).await {
-            return Ok(b);
+        if let Some(browser) = self.get(port).await {
+            if browser.is_alive() {
+                return Ok(browser);
+            }
+            tracing::warn!("端口 {} 的 CDP 连接已断开，丢弃缓存并重新连接", port);
+            self.remove(port).await;
         }
         let browser = Arc::new(CdpBrowser::connect(ws_url).await?);
         self.set(port, browser.clone()).await;

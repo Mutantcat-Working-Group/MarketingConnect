@@ -181,7 +181,8 @@ pub async fn call(
         }
         "stop_engine" => {
             let obscura = app.state::<ObscuraManager>();
-            accounts::stop_engine(obscura)?;
+            let sessions = app.state::<crate::session::SessionRegistry>();
+            accounts::stop_engine(app.clone(), obscura, sessions).await?;
             Ok(json!({"success": true}))
         }
         _ => Err(format!("未知工具: {}", name)),

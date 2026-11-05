@@ -51,9 +51,22 @@ pub fn start_engine(
 }
 
 /// 停止 Obscura 引擎（所有实例）
+///
+/// 必须连同会话与 CDP 连接一起失效：只杀进程会让界面留着指向死引擎的
+/// 「已打开会话」，之后的操作会以难以理解的方式失败。
 #[tauri::command]
-pub fn stop_engine(obscura: State<ObscuraManager>) -> Result<(), String> {
+pub async fn stop_engine(
+    app: AppHandle,
+    obscura: State<'_, ObscuraManager>,
+    sessions: State<'_, SessionRegistry>,
+) -> Result<(), String> {
+    for account_id in sessions.open_account_ids() {
+        if let Err(error) = sessions.close(&app, &account_id).await {
+            tracing::warn!("停止引擎前关闭账号 {} 的会话失败: {}", account_id, error);
+        }
+    }
     obscura.stop_all();
+    app.state::<crate::obscura::CdpState>().clear_all().await;
     Ok(())
 }
 

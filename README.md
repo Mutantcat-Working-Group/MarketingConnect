@@ -80,11 +80,11 @@
 
 从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包（每个平台提供两种架构，文件名里带架构后缀）：
 
-- macOS Apple Silicon（M 系列）：`MarketingConnect_1.0.20261111_aarch64.dmg`
-- macOS Intel（x64）：`MarketingConnect_1.0.20261111_x64.dmg`
-- Windows x64：`MarketingConnect_1.0.20261111_x64-setup.exe`
-- Linux x64：`MarketingConnect_1.0.20261111_amd64.AppImage`
-- Linux arm64：`MarketingConnect_1.0.20261111_aarch64.AppImage`
+- macOS Apple Silicon（M 系列）：`MarketingConnect_1.0.20261112_aarch64.dmg`
+- macOS Intel（x64）：`MarketingConnect_1.0.20261112_x64.dmg`
+- Windows x64：`MarketingConnect_1.0.20261112_x64-setup.exe`
+- Linux x64：`MarketingConnect_1.0.20261112_amd64.AppImage`
+- Linux arm64：`MarketingConnect_1.0.20261112_aarch64.AppImage`
 
 > Windows 目前只提供 x64 包：内置浏览器引擎 Obscura 上游尚未发布 Windows arm64 二进制，缺少它会导致登录/发布功能不可用，因此没有发布无法工作的 arm64 安装包。Windows on ARM 上可运行 x64 包（系统自带 x64 兼容层）。
 
