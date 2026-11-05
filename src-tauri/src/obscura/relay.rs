@@ -1,0 +1,290 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
+//! CDP 事件修补中继
+//!
+//! Obscura 的 `Network.requestWillBeSent` / `Network.responseReceived` 事件
+//! 缺少若干 CDP 规范要求的必填字段。chromiumoxide 的事件类型是强类型的，
+//! 且对「已知方法 + 字段不符」不容错（未知方法才有兜底），因此任何一条这样
+//! 的事件都会让整个 CDP handler 退出、连接中断——表现为打开会话时
+//! `data did not match any variant of untagged enum Message` 后
+//! "oneshot canceled"。
+//!
+//! 这里在客户端与引擎之间放一个只监听回环地址的中继：逐条转发消息，
+//! 仅对这两个事件补齐缺失字段（已存在则原样透传，方便引擎日后自行修复）。
+//!
+//! 通过 `cargo run --example cdp_patch_probe` 可重新探测引擎缺哪些字段。
+
+use anyhow::{Context, Result};
+use futures::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{debug, info, warn};
+
+/// 每个引擎实例对应一个中继端口
+#[derive(Default)]
+pub struct CdpRelay {
+    /// 引擎端口 → 中继端口
+    ports: Mutex<HashMap<u16, u16>>,
+}
+
+impl CdpRelay {
+    /// 返回该引擎端口对应的中继端口，必要时先启动中继
+    pub async fn port_for(&self, engine_port: u16) -> Result<u16> {
+        let mut ports = self.ports.lock().await;
+        if let Some(relay_port) = ports.get(&engine_port) {
+            return Ok(*relay_port);
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .context("启动 CDP 中继失败（无法绑定回环端口）")?;
+        let relay_port = listener.local_addr()?.port();
+
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        tokio::spawn(async move {
+                            if let Err(error) = relay(stream, engine_port).await {
+                                debug!("CDP 中继连接结束（引擎端口 {}）: {}", engine_port, error);
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        warn!("CDP 中继停止接受连接（引擎端口 {}）: {}", engine_port, error);
+                        break;
+                    }
+                }
+            }
+        });
+
+        info!("CDP 中继就绪：引擎端口 {} → 中继端口 {}", engine_port, relay_port);
+        ports.insert(engine_port, relay_port);
+        Ok(relay_port)
+    }
+}
+
+/// 单个客户端连接的中继任务
+async fn relay(client: TcpStream, engine_port: u16) -> Result<()> {
+    let client_ws = tokio_tungstenite::accept_async(client)
+        .await
+        .context("CDP 中继握手失败")?;
+
+    let upstream_url = format!("ws://127.0.0.1:{}/devtools/browser", engine_port);
+    let (upstream_ws, _) = tokio_tungstenite::connect_async(upstream_url.as_str())
+        .await
+        .context("CDP 中继连接引擎失败")?;
+
+    let (mut client_tx, mut client_rx) = client_ws.split();
+    let (mut upstream_tx, mut upstream_rx) = upstream_ws.split();
+
+    // 客户端 → 引擎：原样转发
+    let to_engine = async {
+        while let Some(message) = client_rx.next().await {
+            let message = message?;
+            let closing = message.is_close();
+            upstream_tx.send(message).await?;
+            if closing {
+                break;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // 引擎 → 客户端：按需修补
+    let to_client = async {
+        while let Some(message) = upstream_rx.next().await {
+            let message = message?;
+            let closing = message.is_close();
+            let outgoing = match &message {
+                Message::Text(text) => match patch_event(text.as_str()) {
+                    Some(patched) => Message::Text(patched.into()),
+                    None => message,
+                },
+                _ => message,
+            };
+            dump_message(&outgoing);
+            client_tx.send(outgoing).await?;
+            if closing {
+                break;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+
+    tokio::select! {
+        result = to_engine => result.context("转发到引擎失败")?,
+        result = to_client => result.context("转发到客户端失败")?,
+    }
+    Ok(())
+}
+
+/// 修补引擎缺失的必填字段；返回 `None` 表示无需修改（原样透传）
+pub fn patch_event(text: &str) -> Option<String> {
+    let mut value: Value = serde_json::from_str(text).ok()?;
+    let method = value.get("method").and_then(Value::as_str)?;
+
+    let changed = match method {
+        "Network.requestWillBeSent" => patch_request_will_be_sent(&mut value),
+        "Network.responseReceived" => patch_response_received(&mut value),
+        _ => false,
+    };
+    if !changed {
+        return None;
+    }
+    serde_json::to_string(&value).ok()
+}
+
+fn patch_request_will_be_sent(value: &mut Value) -> bool {
+    let mut changed = false;
+    if let Some(params) = value.get_mut("params") {
+        if let Some(request) = params.get_mut("request").and_then(Value::as_object_mut) {
+            changed |= insert(request, "initialPriority", json!("High"));
+            changed |= insert(request, "referrerPolicy", json!("no-referrer-when-downgrade"));
+        }
+        if let Some(object) = params.as_object_mut() {
+            changed |= insert(object, "redirectHasExtraInfo", json!(false));
+        }
+    }
+    changed
+}
+
+fn patch_response_received(value: &mut Value) -> bool {
+    let mut changed = false;
+    if let Some(params) = value.get_mut("params") {
+        if let Some(response) = params.get_mut("response").and_then(Value::as_object_mut) {
+            changed |= insert(response, "charset", json!(""));
+            changed |= insert(response, "connectionReused", json!(false));
+            changed |= insert(response, "connectionId", json!(0));
+            // 这两个属于 response 内部，事件层没有同名字段
+            changed |= insert(response, "encodedDataLength", json!(0));
+            changed |= insert(response, "securityState", json!("neutral"));
+        }
+        if let Some(object) = params.as_object_mut() {
+            changed |= insert(object, "hasExtraInfo", json!(false));
+        }
+    }
+    changed
+}
+
+/// 仅在字段缺失时写入；已存在则不动（引擎修好后自动透传）
+fn insert(object: &mut serde_json::Map<String, Value>, key: &str, value: Value) -> bool {
+    if object.contains_key(key) {
+        return false;
+    }
+    object.insert(key.to_string(), value);
+    true
+}
+
+/// 诊断开关：设置 `MC_CDP_DUMP=<路径>` 可把经过中继的消息逐条落盘，
+/// 用于再次出现「消息无法解析」时定位是哪一类事件。
+/// 注意：文件中包含 CDP 原始流量（可能含 cookie），排查完请删除。
+fn dump_message(message: &Message) {
+    use std::io::Write;
+    use std::sync::OnceLock;
+
+    static PATH: OnceLock<Option<String>> = OnceLock::new();
+    let Some(path) = PATH
+        .get_or_init(|| std::env::var("MC_CDP_DUMP").ok())
+        .as_deref()
+    else {
+        return;
+    };
+    let Message::Text(text) = message else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{}", text.as_str());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn envelope(method: &str, params: Value) -> String {
+        json!({"method": method, "params": params, "sessionId": "s1"}).to_string()
+    }
+
+    #[test]
+    fn fills_missing_required_fields() {
+        let raw = envelope(
+            "Network.requestWillBeSent",
+            json!({
+                "requestId": "r1",
+                "request": {"url": "https://a.test/", "method": "GET", "headers": {}},
+                "type": "Document"
+            }),
+        );
+        let patched = patch_event(&raw).expect("应当发生修补");
+        let value: Value = serde_json::from_str(&patched).unwrap();
+        assert_eq!(value["params"]["request"]["initialPriority"], json!("High"));
+        assert_eq!(
+            value["params"]["request"]["referrerPolicy"],
+            json!("no-referrer-when-downgrade")
+        );
+        assert_eq!(value["params"]["redirectHasExtraInfo"], json!(false));
+        // 原有字段必须保留
+        assert_eq!(value["params"]["requestId"], json!("r1"));
+        assert_eq!(value["sessionId"], json!("s1"));
+    }
+
+    #[test]
+    fn fills_response_fields() {
+        let raw = envelope(
+            "Network.responseReceived",
+            json!({
+                "requestId": "r1",
+                "response": {"url": "https://a.test/", "status": 200, "headers": {}},
+                "type": "Document"
+            }),
+        );
+        let patched = patch_event(&raw).expect("应当发生修补");
+        let value: Value = serde_json::from_str(&patched).unwrap();
+        assert_eq!(value["params"]["response"]["charset"], json!(""));
+        assert_eq!(value["params"]["response"]["connectionReused"], json!(false));
+        assert_eq!(value["params"]["response"]["connectionId"], json!(0));
+        assert_eq!(value["params"]["response"]["encodedDataLength"], json!(0));
+        assert_eq!(value["params"]["response"]["securityState"], json!("neutral"));
+        assert_eq!(value["params"]["hasExtraInfo"], json!(false));
+    }
+
+    #[test]
+    fn leaves_complete_events_untouched() {
+        let raw = envelope(
+            "Network.requestWillBeSent",
+            json!({
+                "redirectHasExtraInfo": true,
+                "request": {
+                    "url": "https://a.test/",
+                    "method": "GET",
+                    "headers": {},
+                    "initialPriority": "Low",
+                    "referrerPolicy": "origin"
+                }
+            }),
+        );
+        assert!(patch_event(&raw).is_none(), "字段齐全时不应改写");
+    }
+
+    #[test]
+    fn ignores_unrelated_messages() {
+        for method in [
+            "Network.loadingFinished",
+            "Page.lifecycleEvent",
+            "Target.attachedToTarget",
+        ] {
+            let raw = envelope(method, json!({"requestId": "r1"}));
+            assert!(patch_event(&raw).is_none(), "{method} 不应被改写");
+        }
+        assert!(patch_event("{\"id\":1,\"result\":{}}").is_none());
+        assert!(patch_event("not json").is_none());
+    }
+}

@@ -150,7 +150,7 @@ async function remove(id: string) {
     emit("deleted", id);
     emit("refresh");
   } catch {
-    notify("删除失败，请重试");
+    notify(`删除「${account?.name ?? id}」失败，请重试`);
   }
 }
 

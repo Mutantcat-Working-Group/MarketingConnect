@@ -27,14 +27,27 @@ const modeHelp = computed(() => ({
   qr: "请在平台画面中选择扫码登录，使用对应平台的手机应用扫描二维码，并在手机上确认。二维码过期时点击平台原生刷新控件。",
 }[mode.value]));
 
+// Backend failures must reach the user verbatim: the generic summary alone made
+// real causes (engine/CDP errors) undiagnosable from the UI.
+function describeError(error: unknown): string {
+  if (typeof error === "string") return error.trim();
+  if (error instanceof Error) return error.message.trim();
+  return "";
+}
+
 // All browser operations share a gate: background captures never overlap input or finish.
 async function run(operation: () => Promise<void>, errorMessage: string) {
   if (busy.value || disposed) return;
   busy.value = true;
   try {
     await operation();
-  } catch {
-    if (!disposed) message.value = errorMessage;
+  } catch (error) {
+    if (!disposed) {
+      const detail = describeError(error);
+      message.value = detail && !errorMessage.includes(detail)
+        ? `${errorMessage} 原因：${detail}`
+        : errorMessage;
+    }
   } finally {
     busy.value = false;
   }

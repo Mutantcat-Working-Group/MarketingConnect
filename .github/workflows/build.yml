@@ -113,6 +113,9 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib credentials::tests
           cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib login::tests
           cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib platforms::auth::tests
+          # CDP 中继与求值重试：引擎事件缺字段会导致会话无法打开，必须有守护测试
+          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib obscura::relay
+          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib obscura::eval
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0

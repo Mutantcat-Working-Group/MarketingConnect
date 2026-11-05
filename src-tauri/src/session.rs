@@ -188,7 +188,12 @@ impl SessionRegistry {
             info!("关闭账号 {} 的会话", account_id);
             // 通过端口找到对应的 CDP 连接释放 context
             let cdp = app.state::<CdpState>();
-            if let Some(browser) = cdp.get(session.port).await {
+            // CDP 连接以「中继端口」为键，不能用引擎端口去查
+            let relay_port = app
+                .state::<crate::obscura::CdpRelay>()
+                .port_for(session.port)
+                .await?;
+            if let Some(browser) = cdp.get(relay_port).await {
                 browser.dispose_context(&session.context_id).await?;
             }
         }
@@ -304,15 +309,23 @@ pub async fn resolve_browser(
     .await
     .map_err(|e| anyhow::anyhow!("启动浏览器引擎任务失败: {}", e))??;
 
+    // 连接「中继」而不是引擎本身：引擎的 Network 事件缺少若干 CDP 必填字段，
+    // 直接连接会让 chromiumoxide 的 handler 解析失败并断开整条连接。
+    let relay_port = app
+        .state::<crate::obscura::CdpRelay>()
+        .port_for(port)
+        .await
+        .context("启动 CDP 中继失败")?;
+
     // 获取/建立 CDP 连接
-    let ws_url = crate::obscura::ws_url(port);
-    let browser = match cdp.get_or_connect(port, &ws_url).await {
+    let ws_url = crate::obscura::ws_url(relay_port);
+    let browser = match cdp.get_or_connect(relay_port, &ws_url).await {
         Ok(browser) => browser,
         Err(first_error) => {
             // 端口可能仍可连接，但旧 WebSocket handler 已断开；丢弃缓存后只重连一次。
-            warn!("CDP 连接失败，清理端口 {} 的缓存并重试: {}", port, first_error);
-            cdp.remove(port).await;
-            cdp.get_or_connect(port, &ws_url)
+            warn!("CDP 连接失败，清理端口 {} 的缓存并重试: {}", relay_port, first_error);
+            cdp.remove(relay_port).await;
+            cdp.get_or_connect(relay_port, &ws_url)
                 .await
                 .map_err(|retry_error| anyhow::anyhow!("CDP 重连失败（首次: {}; 重试: {}）", first_error, retry_error))?
         }
@@ -371,9 +384,8 @@ async fn export_storage(page: &Page, trusted_origin: &str) -> Result<Option<Page
             local_storage: snapshot(window.localStorage),
             session_storage: snapshot(window.sessionStorage) }};
     }})()"#);
-    let storage: Option<PageStorage> = page.evaluate(script).await
-        .map_err(|_| anyhow::anyhow!("storage 读取失败"))?
-        .into_value().map_err(|_| anyhow::anyhow!("storage 数据格式无效"))?;
+    let storage: Option<PageStorage> = crate::obscura::evaluate(page, script).await
+        .map_err(|_| anyhow::anyhow!("storage 读取失败"))?;
     // Defense in depth: no credential data is included in validation errors.
     Ok(storage.filter(|storage| storage.origin == trusted_origin
         && http_origin(&storage.url).as_deref() == Some(trusted_origin)))

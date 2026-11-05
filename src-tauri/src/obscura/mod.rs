@@ -13,8 +13,12 @@
 //! CDP cookie 导出/恢复机制负责（见 session.rs）。
 
 mod client;
+mod eval;
+mod relay;
 
 pub use client::{CdpBrowser, CdpState};
+pub use eval::evaluate;
+pub use relay::CdpRelay;
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;

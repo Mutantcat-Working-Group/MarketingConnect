@@ -80,9 +80,8 @@ pub(crate) async fn authenticated_probe(
     let origin_literal = serde_json::to_string(&origin)
         .map_err(|_| anyhow!("登录状态检测参数无效"))?;
     let script = PROBE.replace("__TRUSTED_ORIGIN__", &origin_literal);
-    let evidence: Evidence = page.evaluate(script).await
-        .map_err(|_| anyhow!("登录状态检测连接失败"))?
-        .into_value().map_err(|_| anyhow!("无法读取登录状态证据"))?;
+    let evidence: Evidence = crate::obscura::evaluate(page, script).await
+        .map_err(|_| anyhow!("登录状态检测连接失败"))?;
     if evidence.origin != origin || !same_origin(&evidence.url, creator_url) || evidence.login {
         return Ok(false);
     }

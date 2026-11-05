@@ -58,7 +58,7 @@ pub async fn login_action(sessions: State<'_, SessionRegistry>, account_id: Stri
                 _ => unreachable!(),
             };
             position(x, y)?;
-            let size: Vec<f64> = page.evaluate("[window.innerWidth,window.innerHeight]").await.map_err(|_| "获取视口失败")?.into_value().map_err(|_| "无法读取视口尺寸")?;
+            let size: Vec<f64> = crate::obscura::evaluate(&page, "[window.innerWidth,window.innerHeight]").await.map_err(|_| "获取视口失败")?;
             if size.len() != 2 || size.iter().any(|value| !value.is_finite() || *value <= 0.0) { return Err("视口尺寸无效".into()); }
             let px = (x * size[0]).min(size[0] - 1.0);
             let py = (y * size[1]).min(size[1] - 1.0);

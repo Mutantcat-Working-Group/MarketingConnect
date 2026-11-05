@@ -1,6 +1,6 @@
 [package]
 name = "marketing-connect"
-version = "1.0.20261110"
+version = "1.0.20261111"
 description = "营销通 - 多平台矩阵营销号统一管理与发布工具"
 authors = ["Mutantcat"]
 edition = "2024"
@@ -25,6 +25,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 chromiumoxide = "0.7"
+# CDP 中继需要原生 WebSocket 转发（修补引擎缺失的必填字段）
+tokio-tungstenite = "0.29"
 rusqlite = { version = "0.32", features = ["bundled"] }
 aes-gcm = "0.10"
 rand = "0.8"

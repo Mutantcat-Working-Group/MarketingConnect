@@ -11,7 +11,7 @@ mod login;
 mod crypto;
 mod db;
 mod mcp;
-mod obscura;
+pub mod obscura;
 mod platforms;
 mod scheduler;
 mod session;
@@ -54,6 +54,8 @@ pub fn run() {
 
             // CDP 连接状态与账号会话注册表
             app.manage(CdpState::new());
+            // CDP 中继（修补 Obscura Network 事件缺失的必填字段）
+            app.manage(obscura::CdpRelay::default());
             app.manage(SessionRegistry::new());
             app.manage(mcp::McpState::default());
             let mcp_app = app.handle().clone();
