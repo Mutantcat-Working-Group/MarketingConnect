@@ -108,7 +108,11 @@ pub struct PublishContent {
     pub topics: Vec<String>,
     /// 线程分段；非空时按顺序逐条发布，`text` 作为第一段
     pub thread_segments: Vec<String>,
-    /// 平台内定时发布的绝对时间戳（毫秒）
+    /// 平台内定时发布的绝对时间戳，单位**秒**
+    ///
+    /// 与数据库 `scheduled_at` 列（由 `chrono::Utc::now().timestamp()` 写入）
+    /// 保持一致，任何地方都不要换算成毫秒。若某个平台接口要求毫秒，
+    /// 在该适配器内部换算，不要改这里的单位。
     pub schedule_at: Option<i64>,
 }
 
