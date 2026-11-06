@@ -589,10 +589,35 @@ Expected: PASS，11 passed
 
 - [ ] **Step 5: 接入 `get_or_start`**
 
-先读 `src-tauri/src/obscura/mod.rs` 中现有的 `get_or_start`，找到 `MC_ENGINE_CMD` 的处理与默认引擎命令的构造处。把「决定用哪个可执行文件」的逻辑替换为调用解析链，并保留原有参数拼装：
+**先注意三个约束，它们决定了这段代码的形状：**
+
+1. `get_or_start` 的签名是 `pub fn get_or_start(&self, app: &AppHandle, proxy: Option<&str>) -> Result<u16>`，是**同步函数**，而下载是异步的。
+2. 它的调用点之一是 `src/session.rs:307` 的 `resolve_browser`（**async**）。因此**不能**在 `get_or_start` 里直接用 `tauri::async_runtime::block_on`——在运行时线程上嵌套 `block_on` 会 panic。
+3. `installed_chrome_path` 现在返回 `Option<PathBuf>`（平台不受支持时为 `None`）。
+
+因此把异步下载放到**独立线程的独立运行时**上执行。该路径每台机器只走一次，代价可接受。
+
+`src-tauri/src/obscura/mod.rs` 需要新增导入：
 
 ```rust
-// 1) 显式覆盖
+use tauri::Manager; // app.state::<Db>() 与 app.path()
+```
+
+把原来「决定用哪个可执行文件」的逻辑替换为：
+
+```rust
+// 0) 设置项需要从托管状态取 Db
+let db = app.state::<crate::db::Db>();
+let data_dir = app.path().app_data_dir().context("无法确定应用数据目录")?;
+
+// 锁定版本：第一次下载后写入设置，之后固定复用同一版本
+let version = db
+    .get_setting("engine_version")
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| engine::LOCKED_CFT_VERSION.to_string());
+
+// 1) 显式覆盖（MC_ENGINE_CMD 的第一段即可执行文件）
 let explicit = std::env::var("MC_ENGINE_CMD")
     .ok()
     .and_then(|raw| split_command(&raw).into_iter().next());
@@ -600,25 +625,14 @@ let explicit = std::env::var("MC_ENGINE_CMD")
 // 2) 本机 Chrome
 let system = engine::find_system_chrome();
 
-// 3) 已下载（版本取自设置，缺失时用锁定默认值）
-let data_dir = app.path().app_data_dir().context("无法确定应用数据目录")?;
-let version = db.get_setting("engine_version")?
-    .unwrap_or_else(|| engine::LOCKED_CFT_VERSION.to_string());
-let downloaded = {
-    let p = engine::installed_chrome_path(&data_dir, &version);
-    p.is_file().then_some(p)
-};
+// 3) 应用数据目录中已下载的引擎
+let downloaded = engine::installed_chrome_path(&data_dir, &version).filter(|p| p.is_file());
 
 // 4) 都没有则下载
 let resolved = match engine::pick_engine(explicit, system, downloaded) {
     Some(found) => found,
     None => {
-        let key = engine::chrome_for_testing_platform_key()
-            .ok_or_else(|| anyhow!("当前平台不支持自动获取引擎"))?;
-        let feed: serde_json::Value = reqwest::get(engine::CFT_VERSIONS_URL).await
-            .context("获取引擎版本清单失败")?.json().await.context("解析引擎版本清单失败")?;
-        let url = engine::stable_download_url(&feed, key).ok_or_else(|| anyhow!("版本清单中没有当前平台的引擎"))?;
-        let exe = engine::download_chrome(&data_dir, &url, &version).await?;
+        let exe = fetch_engine_blocking(data_dir, version.clone())?;
         let _ = db.set_setting("engine_version", &version);
         (exe, engine::EngineOrigin::Downloaded)
     }
@@ -626,11 +640,49 @@ let resolved = match engine::pick_engine(explicit, system, downloaded) {
 tracing::info!("使用引擎: {}（来源: {:?}）", resolved.0.display(), resolved.1);
 ```
 
+在同一文件（`mod.rs`）中加入同步包装：
+
+```rust
+/// 同步函数里不能 await；又因为 `get_or_start` 会被 async 的 `resolve_browser`
+/// 调用，在运行时线程上 `block_on` 会 panic。因此在独立线程上用独立运行时
+/// 执行下载，与 Tauri 的运行时完全隔离。
+fn fetch_engine_blocking(data_dir: std::path::PathBuf, version: String) -> Result<std::path::PathBuf> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || -> Result<std::path::PathBuf> {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("创建下载运行时失败")?;
+                runtime.block_on(async {
+                    let key = engine::chrome_for_testing_platform_key()
+                        .context("当前平台不支持自动获取引擎")?;
+                    let feed: serde_json::Value = reqwest::get(engine::CFT_VERSIONS_URL)
+                        .await
+                        .context("获取引擎版本清单失败")?
+                        .json()
+                        .await
+                        .context("解析引擎版本清单失败")?;
+                    let url = engine::stable_download_url(&feed, key)
+                        .context("版本清单中没有当前平台的引擎")?;
+                    engine::download_chrome(&data_dir, &url, &version).await
+                })
+            })
+            .join()
+            .map_err(|_| anyhow!("下载引擎的线程异常退出"))?
+    })
+}
+```
+
 在 `engine.rs` 中补上锁定版本常量：
 
 ```rust
-/// 锁定的 Chrome for Testing 版本。中继补丁是按该版本流量推导的，
-/// 不要改成「每次启动取最新」，否则会引入未知事件。
+/// 锁定的 Chrome for Testing 版本。
+///
+/// 中继的事件补丁是按特定版本的流量推导的，版本漂移会引入新的未知事件，
+/// 因此不要改成「每次启动取最新」。实测该版本可正常下载与解压：
+/// 187.5 MB / 35.4s，解压后 `--version` 输出
+/// `Google Chrome for Testing 157.0.8103.38`。
 pub const LOCKED_CFT_VERSION: &str = "157.0.8103.38";
 ```
 
