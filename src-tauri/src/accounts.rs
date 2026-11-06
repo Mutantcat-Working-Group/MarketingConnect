@@ -236,6 +236,13 @@ pub async fn capture_screenshot(
 ///
 /// 若带 cron 表达式，同步注册到定时调度器；注册失败会明确报错，
 /// 不会出现「界面提示创建成功但任务永远不会执行」的静默失败。
+///
+/// `cover_path` / `topics` / `thread_segments` 是发布内容扩展字段：本任务
+/// 只做到「数据库列 ←→ 调度」贯通与命令/`api.ts` 可选参数，前端可视化控件
+/// 留到 Task 11 与能力 UI 一起做，**有意**不在这里暴露 UI。
+/// 存储格式：`topics` 以 `,` 分隔、`thread_segments` 以 `||` 分隔，与
+/// `scheduler::execute_publish` 的解析用同一个分隔符。
+/// `scheduled_at` 单位是**秒**（与数据库列一致），不做毫秒换算。
 #[tauri::command]
 pub async fn create_publish_task(
     app: AppHandle,
@@ -246,6 +253,9 @@ pub async fn create_publish_task(
     media_paths: Option<String>,
     cron_expr: Option<String>,
     scheduled_at: Option<i64>,
+    cover_path: Option<String>,
+    topics: Option<String>,
+    thread_segments: Option<String>,
 ) -> Result<PublishTask, String> {
     let task = db
         .create_task(
@@ -255,6 +265,9 @@ pub async fn create_publish_task(
             media_paths.as_deref(),
             cron_expr.as_deref(),
             scheduled_at,
+            cover_path.as_deref(),
+            topics.as_deref(),
+            thread_segments.as_deref(),
         )
         .map_err(|e| e.to_string())?;
 
@@ -379,36 +392,51 @@ pub async fn batch_publish(
         };
 
         let result = match crate::platforms::find_adapter(&account.platform, Some(&db)) {
-            Some(adapter) => match adapter.publish(&page, &publish_content).await {
-                Ok(()) => {
-                    let _ = db.log_event(
-                        Some(account_id),
-                        "info",
-                        "batch_publish",
-                        Some("批量发布成功"),
-                    );
-                    serde_json::json!({
-                        "account_id": account_id,
-                        "account_name": account.name,
-                        "success": true,
-                        "error": null,
-                    })
-                }
-                Err(e) => {
-                    let _ = db.log_event(
-                        Some(account_id),
-                        "error",
-                        "batch_publish",
-                        Some(&format!("批量发布失败: {}", e)),
-                    );
-                    serde_json::json!({
+            Some(adapter) => {
+                // 发布前能力校验：内容超出平台能力时直接判定该账号失败，
+                // 不调用 adapter.publish，让错误在真正发布前暴露。
+                if let Err(e) = adapter.capabilities().validate(&publish_content) {
+                    let reason = format!("内容超出平台能力: {}", e);
+                    let _ = db.log_event(Some(account_id), "error", "batch_publish", Some(&reason));
+                    results.push(serde_json::json!({
                         "account_id": account_id,
                         "account_name": account.name,
                         "success": false,
-                        "error": e.to_string(),
-                    })
+                        "error": reason,
+                    }));
+                    continue;
                 }
-            },
+                match adapter.publish(&page, &publish_content).await {
+                    Ok(()) => {
+                        let _ = db.log_event(
+                            Some(account_id),
+                            "info",
+                            "batch_publish",
+                            Some("批量发布成功"),
+                        );
+                        serde_json::json!({
+                            "account_id": account_id,
+                            "account_name": account.name,
+                            "success": true,
+                            "error": null,
+                        })
+                    }
+                    Err(e) => {
+                        let _ = db.log_event(
+                            Some(account_id),
+                            "error",
+                            "batch_publish",
+                            Some(&format!("批量发布失败: {}", e)),
+                        );
+                        serde_json::json!({
+                            "account_id": account_id,
+                            "account_name": account.name,
+                            "success": false,
+                            "error": e.to_string(),
+                        })
+                    }
+                }
+            }
             None => serde_json::json!({
                 "account_id": account_id,
                 "account_name": account.name,

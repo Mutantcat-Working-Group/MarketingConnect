@@ -181,14 +181,36 @@ pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: 
         .filter(|s| !s.is_empty())
         .collect();
 
+    // 话题用 `,` 分隔、线程分段用 `||` 分隔存储，与 create_publish_task 的写入一致。
+    let topics: Vec<String> = task
+        .topics
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    let thread_segments: Vec<String> = task
+        .thread_segments
+        .as_deref()
+        .unwrap_or("")
+        .split("||")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+
     let content = PublishContent {
         title: task.title.clone(),
         text: task.content.clone().unwrap_or_default(),
         media_paths,
-        cover_path: None,
-        topics: Vec::new(),
-        thread_segments: Vec::new(),
-        schedule_at: None,
+        cover_path: task.cover_path.clone(),
+        topics,
+        thread_segments,
+        // 数据库列名是 scheduled_at，映射到 PublishContent.schedule_at。
+        // 两侧单位都是**秒**，直接拷贝，**不要**乘以 1000 之类的换算。
+        schedule_at: task.scheduled_at,
     };
 
     // 4. 调用平台适配器发布
@@ -202,6 +224,13 @@ pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: 
 
     if sessions.is_login_active(account_id) {
         warn!("账号 {} 登录验证中，取消本次发布（任务保留，等待下次调度）", account_id);
+        return;
+    }
+
+    // 发布前能力校验：内容超出平台能力时直接判失败，不发起发布。
+    // 该函数返回 ()，所以不能用 `?`（anyhow 的 Result 也与此处无关）。
+    if let Err(e) = adapter.capabilities().validate(&content) {
+        fail_task(&db, task_id, &format!("内容超出平台能力: {}", e));
         return;
     }
 

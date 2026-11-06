@@ -92,6 +92,12 @@ pub struct PublishTask {
     pub title: Option<String>,
     pub content: Option<String>,
     pub media_paths: Option<String>,
+    /// 封面图路径（视频/文章头图）
+    pub cover_path: Option<String>,
+    /// 话题标签，以 `,` 分隔存储
+    pub topics: Option<String>,
+    /// 线程分段，以 `||` 分隔存储（与 scheduler 的解析保持一致）
+    pub thread_segments: Option<String>,
     pub cron_expr: Option<String>,
     pub status: String,
     pub result: Option<String>,
@@ -202,6 +208,14 @@ impl Db {
 
         // 增量迁移：为已有数据库补充 group_name 列（已存在则忽略错误）
         let _ = conn.execute("ALTER TABLE accounts ADD COLUMN group_name TEXT", []);
+
+        // 增量迁移：发布内容扩展字段（已存在则忽略错误）。
+        // `scheduled_at` 已在建表语句里，不要重复添加。
+        let _ = conn.execute("ALTER TABLE publish_tasks ADD COLUMN cover_path TEXT", []);
+        let _ = conn.execute("ALTER TABLE publish_tasks ADD COLUMN topics TEXT", []);
+        let _ = conn.execute("ALTER TABLE publish_tasks ADD COLUMN thread_segments TEXT", []);
+        // 令牌型平台的登录凭据（加密存储），由 Task 8 的令牌登录读写。
+        let _ = conn.execute("ALTER TABLE accounts ADD COLUMN api_token_enc BLOB", []);
 
         Ok(())
     }
@@ -402,6 +416,9 @@ impl Db {
     // ---------- 发布任务 ----------
 
     /// 创建发布任务
+    ///
+    /// `scheduled_at` 单位是**秒**（与 `chrono::Utc::now().timestamp()` 一致），
+    /// 直接落库，不做任何毫秒换算。
     pub fn create_task(
         &self,
         account_id: &str,
@@ -410,14 +427,30 @@ impl Db {
         media_paths: Option<&str>,
         cron_expr: Option<&str>,
         scheduled_at: Option<i64>,
+        cover_path: Option<&str>,
+        topics: Option<&str>,
+        thread_segments: Option<&str>,
     ) -> Result<PublishTask> {
         let conn = self.conn.lock().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp();
         conn.execute(
-            "INSERT INTO publish_tasks (id, account_id, title, content, media_paths, cron_expr, status, scheduled_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)",
-            params![id, account_id, title, content, media_paths, cron_expr, scheduled_at, now],
+            "INSERT INTO publish_tasks (id, account_id, title, content, media_paths, cover_path,
+                                        topics, thread_segments, cron_expr, status, scheduled_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?11)",
+            params![
+                id,
+                account_id,
+                title,
+                content,
+                media_paths,
+                cover_path,
+                topics,
+                thread_segments,
+                cron_expr,
+                scheduled_at,
+                now
+            ],
         )?;
         Ok(PublishTask {
             id,
@@ -425,6 +458,9 @@ impl Db {
             title: title.map(String::from),
             content: content.map(String::from),
             media_paths: media_paths.map(String::from),
+            cover_path: cover_path.map(String::from),
+            topics: topics.map(String::from),
+            thread_segments: thread_segments.map(String::from),
             cron_expr: cron_expr.map(String::from),
             status: "pending".into(),
             result: None,
@@ -438,7 +474,8 @@ impl Db {
     pub fn list_tasks(&self, account_id: &str) -> Result<Vec<PublishTask>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, account_id, title, content, media_paths, cron_expr, status, result, scheduled_at, executed_at, created_at
+            "SELECT id, account_id, title, content, media_paths, cover_path, topics,
+                    thread_segments, cron_expr, status, result, scheduled_at, executed_at, created_at
              FROM publish_tasks WHERE account_id = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map(params![account_id], |row| {
@@ -448,12 +485,15 @@ impl Db {
                 title: row.get(2)?,
                 content: row.get(3)?,
                 media_paths: row.get(4)?,
-                cron_expr: row.get(5)?,
-                status: row.get(6)?,
-                result: row.get(7)?,
-                scheduled_at: row.get(8)?,
-                executed_at: row.get(9)?,
-                created_at: row.get(10)?,
+                cover_path: row.get(5)?,
+                topics: row.get(6)?,
+                thread_segments: row.get(7)?,
+                cron_expr: row.get(8)?,
+                status: row.get(9)?,
+                result: row.get(10)?,
+                scheduled_at: row.get(11)?,
+                executed_at: row.get(12)?,
+                created_at: row.get(13)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -780,5 +820,31 @@ mod account_tests {
         assert!(db.update_account(&account.id, &input).is_err());
         assert_eq!(db.list_accounts().unwrap()[0].name, account.name);
         assert!(db.update_account("missing", &edit()).is_err());
+    }
+
+    #[test]
+    fn publish_task_persists_extended_fields() {
+        let db = db();
+        let account = db.create_account(&new_account()).unwrap();
+        // 计划原文这里写的是 1_800_000_000_000（毫秒），但 scheduled_at 全链路
+        // 统一为秒且不做换算，故用秒值；断言与计划一致（1_800_000_000）。
+        let task = db.create_task(
+            &account.id,
+            Some("标题"),
+            Some("正文"),
+            None,
+            None,
+            Some(1_800_000_000),
+            Some("/tmp/cover.png"),
+            Some("话题A,话题B"),
+            Some("第一段||第二段"),
+        ).unwrap();
+
+        let loaded = db.list_tasks(&account.id).unwrap()
+            .into_iter().find(|t| t.id == task.id).expect("任务应存在");
+        assert_eq!(loaded.cover_path.as_deref(), Some("/tmp/cover.png"));
+        assert_eq!(loaded.topics.as_deref(), Some("话题A,话题B"));
+        assert_eq!(loaded.thread_segments.as_deref(), Some("第一段||第二段"));
+        assert_eq!(loaded.scheduled_at, Some(1_800_000_000));
     }
 }

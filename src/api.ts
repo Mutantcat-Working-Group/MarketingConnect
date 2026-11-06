@@ -157,7 +157,14 @@ export const createPublishTask = (params: {
   content?: string;
   media_paths?: string;
   cron_expr?: string;
+  /** 单位：秒（与数据库 scheduled_at 列一致） */
   scheduled_at?: number;
+  /** 封面图路径；前端控件留到 Task 11 的能力 UI */
+  cover_path?: string;
+  /** 话题标签，以 `,` 分隔存储 */
+  topics?: string;
+  /** 线程分段，以 `||` 分隔存储 */
+  thread_segments?: string;
 }) => invoke<PublishTask>("create_publish_task", params);
 
 export const listPublishTasks = (accountId: string) =>

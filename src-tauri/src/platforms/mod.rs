@@ -44,9 +44,9 @@ pub fn is_builtin_platform_id(id: &str) -> bool {
 }
 
 /// 平台支持的能力，驱动前端显示与发布前校验
-// 能力矩阵在后续任务（前端能力 UI 与发布前校验接线）才被实际调用，
-// 此处先落地类型定义；加 allow 以免为尚未接线的骨架引入新的编译警告。
-#[allow(dead_code)]
+///
+/// 发布前校验已接线（`scheduler::execute_publish` 与 `accounts::batch_publish`），
+/// 前端能力 UI 留到 Task 11。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Capabilities {
     pub text: bool,
@@ -59,9 +59,11 @@ pub struct Capabilities {
     pub schedule: bool,
 }
 
-#[allow(dead_code)]
 impl Capabilities {
     /// 仅文本
+    // 目前只有本模块的 `#[cfg(test)]` 校验用例引用它，非测试构建下是 dead code；
+    // 这里只对这一个常量做精确抑制，不再对整个 `impl` 加 allow。
+    #[allow(dead_code)]
     pub const TEXT_ONLY: Self = Self {
         text: true, images: false, video: false, multi_image: false,
         cover: false, topics: false, thread: false, schedule: false,
