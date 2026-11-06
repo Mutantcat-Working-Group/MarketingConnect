@@ -686,6 +686,96 @@ fn fetch_engine_blocking(data_dir: std::path::PathBuf, version: String) -> Resul
 pub const LOCKED_CFT_VERSION: &str = "157.0.8103.38";
 ```
 
+**关键：非 `Explicit` 来源必须用 Chrome 的参数，不能沿用 obscura 的参数。**
+
+obscura 用 `serve --port … --stealth --font-dir …`，而 Chrome **没有 `serve` 子命令**，
+会把 `serve` 当成网址，永远不会在该端口监听，`get_or_start` 必然在 10 秒后报「启动超时」。
+真 Chrome 原生加载系统字体，也不需要 `--font-dir`。
+
+`System | Downloaded` 分支：
+
+```rust
+engine::EngineOrigin::System | engine::EngineOrigin::Downloaded => {
+    // 每个实例（每个代理）必须用独立的 profile 目录：实测 Chrome 对同一
+    // --user-data-dir 的第二个进程会直接中止——
+    //   Failed to create ProcessSingleton for your profile directory.
+    //   Aborting now to avoid profile corruption.
+    // 导致多代理场景下第二个引擎永远起不来。
+    let profile = engine::chrome_profile_dir(&data_dir, &key);
+    let mut args: Vec<String> = vec![
+        "--headless=new".to_string(),
+        format!("--remote-debugging-port={port}"),
+        // 外部 CDP 客户端（本机中继）需要被允许
+        "--remote-allow-origins=*".to_string(),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+        "--disable-blink-features=AutomationControlled".to_string(),
+        format!("--user-data-dir={}", profile.display()),
+        "--window-size=1280,860".to_string(),
+        format!("--user-agent={}", engine::chrome_user_agent(&version)),
+    ];
+    if let Some(p) = proxy {
+        args.push(format!("--proxy-server={p}"));
+    }
+    app.shell()
+        .command(resolved.0.to_string_lossy().into_owned())
+        .args(args)
+}
+```
+
+配套的两个纯函数（`engine.rs`，都要能在单一平台上测到全部平台/全部键）：
+
+```rust
+/// 真 Chrome 启动时使用的 User-Agent
+///
+/// 无头模式默认带 `HeadlessChrome` 标记，是明显的自动化特征。这里按平台与
+/// 主版本号生成普通 UA（主版本取自锁定版本，保证与实际内核一致）。
+pub fn chrome_user_agent(version: &str) -> String {
+    let major = version.split('.').next().unwrap_or(version);
+    let platform = if cfg!(target_os = "macos") {
+        "Macintosh; Intel Mac OS X 10_15_7"
+    } else if cfg!(target_os = "windows") {
+        "Windows NT 10.0; Win64; x64"
+    } else {
+        "X11; Linux x86_64"
+    };
+    format!(
+        "Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+}
+
+/// FNV-1a 哈希：稳定、无依赖。不用 `DefaultHasher`，因为它不保证跨 Rust 版本
+/// 稳定，而后缀一旦变化 profile 目录就会变，用户会平白丢掉浏览器侧登录态。
+fn fnv1a(input: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// 按实例键派生 Chrome 用户数据目录（键需清洗成文件名安全形式，
+/// 末尾附哈希后缀，避免清洗后同形但实际不同的键落到同一目录）
+pub fn chrome_profile_dir(data_dir: &Path, instance_key: &str) -> PathBuf {
+    let mut safe: String = instance_key
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    safe.truncate(32);
+    if safe.is_empty() {
+        safe.push_str("direct");
+    }
+    data_dir
+        .join("chrome-profile")
+        .join(format!("{safe}-{:08x}", fnv1a(instance_key) as u32))
+}
+```
+
+同时把超时报错从 `"obscura 实例启动超时（端口 {} 未就绪）"` 改为 `"引擎启动超时（端口 {} 未就绪）"`（引擎已不一定是 obscura）。
+
+`font_dirs()` 保留：`obscura` 是 `pub mod`，`pub fn` 可达，不会产生 dead_code 警告；用户用 `MC_ENGINE_CMD` 指向 obscura 时仍需要它。
+
 `Db::get_setting` / `Db::set_setting` **已经存在**（`src-tauri/src/db.rs:523` 与 `:535`；`settings` 表列为 `key` / `value` / `updated_at`），直接调用，**不要重复实现**：
 
 ```rust
