@@ -121,9 +121,31 @@ X、Facebook、LinkedIn、Pinterest、Threads。X / Threads 支持线程与定�
 
 快手、视频号、西瓜视频，均为视频 + 封面 + 定时。
 
-## 前置阻塞项
+## 前置阻塞项：引擎方案（已定）
 
-**引擎方案必须先定。** 本批国内 11 个平台全部依赖真 Chromium 登录（Obscura 无法通过 ByteDance 系风控，实测登录 SDK 会中止二维码轮询）。若引擎仍是 Obscura，适配器写完也登录不上，因此引擎决策在顺序上早于适配器实现。
+**已确认：双轨制。** 优先使用本机已安装的 Chrome，缺失时自动下载 Chrome for Testing 到应用数据目录。国内 11 个平台全依赖真 Chromium 登录（Obscura 无法通过 ByteDance 系风控，实测登录 SDK 会中止二维码轮询），引擎决策在顺序上早于适配器实现。
+
+引擎解析链：
+
+1. 环境变量 `MC_ENGINE_CMD`（显式覆盖，调试与高级用户用）
+2. 本机 Chrome（macOS / Windows / Linux 的常见安装路径）
+3. 应用数据目录下已下载的 Chrome for Testing
+4. 都没有则自动下载
+
+下载实现要点：
+
+- 版本来源 `https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json`（已验证可达），按平台取 `mac-arm64` / `mac-x64` / `win64` / `linux64` 的 zip。
+- **必须锁定具体版本号写入配置，不要在每次启动时取最新。** 实测该接口当前 stable 为 `157.0.8103.38`，而本次中继补丁是用 `151.0.7922.34` 的流量推导的；版本漂移会引入新的未知事件。
+- 下载由应用自身发起（非浏览器下载），不经过 LaunchServices，因此不会被打上 `com.apple.quarantine` 隔离属性；即便如此仍应在启动失败时给出可操作的提示，而不是静默失败。
+- 解压后校验可执行文件存在且能启动，再写入配置记为该版本可用。
+
+## 中继健壮性：未知事件兜底
+
+引擎版本漂移会持续产生新的 CDP 事件形状，逐个打补丁是打地鼠。因此中继除现有已知补丁外，增加一层兜底：
+
+**对每个事件用 chromiumoxide 的反序列化器试解析，解析失败的事件直接丢弃并记录警告，而不是让整条连接断开。**
+
+理由：解析失败的事件本来就不会被消费（继续转发只会杀掉连接），丢弃它是严格更优的选择；同时把「又一个平台打不开」降级为「一条可排查的日志」。实现需要把 `chromiumoxide_cdp` / `chromiumoxide_types` 提升为直接依赖（已在 lock 文件中，可离线解析）。
 
 ## 验证策略
 
@@ -138,7 +160,7 @@ X、Facebook、LinkedIn、Pinterest、Threads。X / Threads 支持线程与定�
 - **国外全走官方 API（对齐 Postiz）**：最稳定，但需要为每个平台注册开发者应用并过审，Meta 系基本无法完成，桌面端内嵌密钥也不可行。
 - **可见 Chromium 窗口**：登录交互更直观、兼容面更大，但增加跨平台打包成本，且与「后台批量发布」的产品定位冲突。
 
-## 待确认项
+## 已确认决策
 
-1. 引擎方案：打包 Chromium（安装包增大）还是要求本机已安装 Chrome。
-2. 本地验证方式：此前要求「完全用 GitHub Actions 打包与验证」，但选择器实测必须在本地真 Chromium 中进行，二者需要明确取舍。
+1. **引擎**：双轨制——本机 Chrome 优先，缺失时自动下载 Chrome for Testing 并锁定版本（见「前置阻塞项」）。
+2. **验证方式**：允许在本地真实 Chromium 中实测各平台登录页选择器，并向用户报告实测结果；打包与发布仍走 GitHub Actions。单元测试与前端构建本地执行属于常规开发验证，不视为替代 CI。
