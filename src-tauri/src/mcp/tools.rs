@@ -24,8 +24,8 @@ pub fn definitions(config: &McpConfig) -> Vec<Value> {
     vec![
         json!({"name":"list_accounts","description":"列出营销通中保存的全部账号及状态。","inputSchema":{"type":"object","properties":{}}}),
         json!({"name":"list_platforms","description":"列出当前支持的平台。","inputSchema":{"type":"object","properties":{}}}),
-        json!({"name":"engine_status","description":"查询 Obscura 浏览器引擎及实例状态。","inputSchema":{"type":"object","properties":{}}}),
-        json!({"name":"check_account_session","description":format!("检测指定账号是否仍保持登录状态；会打开会话、更新账号状态，且可能触发掉号通知{}。", write_note),"inputSchema":{"type":"object","properties":{"account_id":text_property("账号 ID")},"required":["account_id"]}}),
+        json!({"name":"engine_status","description":"查询浏览器引擎及实例状态。","inputSchema":{"type":"object","properties":{}}}),
+        json!({"name":"check_account_session","description":format!("检测指定账号是否仍保持登录状态；会更新账号状态，且可能触发掉号通知{}。浏览器族平台会打开会话做页面探测，令牌型平台（如 Dev.to）改用 API 令牌校验、不打开浏览器。", write_note),"inputSchema":{"type":"object","properties":{"account_id":text_property("账号 ID")},"required":["account_id"]}}),
         json!({"name":"recent_logs","description":"查询最近的营销通事件日志。","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":200,"description":"返回条数，默认 50"}}}}),
         json!({"name":"check_sensitive_words","description":"检测文案中的敏感词。","inputSchema":{"type":"object","properties":{"text":text_property("需要检测的文本")},"required":["text"]}}),
         json!({"name":"open_account_session","description":format!("打开指定账号的浏览器会话{}。", write_note),"inputSchema":{"type":"object","properties":{"account_id":text_property("账号 ID")},"required":["account_id"]}}),

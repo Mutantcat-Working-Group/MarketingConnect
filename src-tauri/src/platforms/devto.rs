@@ -302,11 +302,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_title() {
+    fn missing_title_yields_empty_title_and_never_fabricates_one() {
+        // 职责划分：build_article_payload 只负责产出载荷，**拒绝**缺标题是
+        // publish_with_token 的事（由 publish_with_token_validates_before_any_network_call
+        // 覆盖）。这里守护的是另一件事：builder 既不能把 article 整个丢掉，
+        // 也不能替用户编一个标题出来。
         let content = crate::platforms::PublishContent {
             title: None, text: "正文".into(), media_paths: Vec::new(),
             cover_path: None, topics: Vec::new(), thread_segments: Vec::new(), schedule_at: None,
         };
-        assert!(build_article_payload(&content).get("article").is_none() || build_article_payload(&content)["article"]["title"].as_str().unwrap_or("").is_empty());
+        let payload = build_article_payload(&content);
+        let article = payload
+            .get("article")
+            .expect("缺标题时仍应产出 article 对象，由 publish_with_token 负责拒绝");
+        assert_eq!(
+            article["title"],
+            serde_json::json!(""),
+            "缺标题时不得伪造标题，应为空字符串"
+        );
     }
 }

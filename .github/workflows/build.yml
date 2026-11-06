@@ -43,7 +43,8 @@ jobs:
             args: "--target x86_64-apple-darwin --bundles dmg"
             apple_signing_identity: "-"
             run_tests: false
-          # Windows x64（上游 Obscura 引擎暂无 arm64 Windows 构建）
+          # Windows x64。暂不出 arm64：Obscura 侧车无 arm64 Windows 产物，
+          # 且用户明确表示本批次暂不需要 Windows arm64。
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: "--target x86_64-pc-windows-msvc --bundles nsis"

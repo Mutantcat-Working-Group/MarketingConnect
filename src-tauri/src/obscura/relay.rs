@@ -2,8 +2,12 @@
 // Copyright (C) 2026 Mutantcat
 //! CDP 事件修补中继
 //!
-//! Obscura 的 `Network.requestWillBeSent` / `Network.responseReceived` 事件
-//! 缺少若干 CDP 规范要求的必填字段。chromiumoxide 的事件类型是强类型的，
+//! 引擎发来的 `Network.requestWillBeSent` / `Network.responseReceived` 事件
+//! 缺少若干 CDP 规范要求的必填字段。这不是 Obscura 独有的问题：在 Chrome for
+//! Testing 157 上实测同样会收到缺字段的 `Network.requestWillBeSentExtraInfo`
+//! （缺 `params.clientSecurityState`）与 `Page.frameRequestedNavigation`
+//! （`reason` 取值不在枚举内）。因此本模块对默认的真实 Chrome 引擎**同样必需**，
+//! 不是切换到 Chrome 之后就能删掉的包袱。chromiumoxide 的事件类型是强类型的，
 //! 且对「已知方法 + 字段不符」不容错（未知方法才有兜底），因此任何一条这样
 //! 的事件都会让整个 CDP handler 退出、连接中断——表现为打开会话时
 //! `data did not match any variant of untagged enum Message` 后

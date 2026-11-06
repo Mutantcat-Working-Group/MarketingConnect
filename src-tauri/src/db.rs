@@ -450,8 +450,11 @@ impl Db {
     ///
     /// 只查询密文列是否存在且非空，**不**调用 `crypto::decrypt`，因此不会访问
     /// 系统钥匙串。与 `get_api_token` 的语义保持一致：空 blob 视为未配置。
-    /// 账号不存在时返回 `Ok(false)`——对调用方（前端「已配置 / 未配置」展示）
-    /// 而言与「未配置」等价，不必区分，也避免把「账号刚被删除」当成硬错误。
+    /// 账号不存在时返回 `Ok(false)`。注意区分两层：
+    /// - `has_api_token` 本身**不区分**「账号不存在」与「未配置」，两者都是 false；
+    /// - 对外的 `api_token_configured` 命令会**先** `find_account` 校验账号是否存在，
+    ///   不存在时直接报「账号不存在」，以免把「账号被删了」静默显示成「未配置」。
+    ///   因此需要区分时请调用命令，而不是依赖本方法。
     pub fn has_api_token(&self, account_id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let configured: Option<i64> = conn

@@ -81,7 +81,7 @@ impl ObscuraManager {
         let port = self.allocate_port();
 
         info!(
-            "启动 obscura 实例（代理: {}，端口: {}）",
+            "启动浏览器引擎实例（代理: {}，端口: {}）",
             proxy.unwrap_or("直连"),
             port
         );
@@ -190,7 +190,7 @@ impl ObscuraManager {
             anyhow::bail!("引擎启动超时（端口 {} 未就绪）", port);
         }
 
-        info!("obscura 实例就绪（端口 {}）", port);
+        info!("浏览器引擎实例就绪（端口 {}）", port);
         self.instances
             .lock()
             .unwrap()
@@ -213,7 +213,7 @@ impl ObscuraManager {
     pub fn stop(&self, proxy: Option<&str>) {
         let key = proxy.unwrap_or(DIRECT_KEY);
         if let Some(inst) = self.instances.lock().unwrap().remove(key) {
-            info!("停止 obscura 实例（端口 {}）", inst.port);
+            info!("停止浏览器引擎实例（端口 {}）", inst.port);
             let _ = inst.child.kill();
         }
     }
@@ -228,7 +228,7 @@ impl ObscuraManager {
             .map(|(_, inst)| inst)
             .collect();
         for inst in instances {
-            info!("停止 obscura 实例（端口 {}）", inst.port);
+            info!("停止浏览器引擎实例（端口 {}）", inst.port);
             let _ = inst.child.kill();
         }
     }
