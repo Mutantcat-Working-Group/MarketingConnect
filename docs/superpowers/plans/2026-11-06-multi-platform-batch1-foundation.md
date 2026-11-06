@@ -1086,7 +1086,8 @@ pub struct PublishContent {
     pub topics: Vec<String>,
     /// 线程分段；非空时按顺序逐条发布，`text` 作为第一段
     pub thread_segments: Vec<String>,
-    /// 平台内定时发布的绝对时间戳（毫秒）
+    /// 平台内定时发布的绝对时间戳，单位**秒**（与数据库 `scheduled_at` 列
+    /// 及 `chrono::Utc::now().timestamp()` 保持一致，任何地方都不要换算成毫秒）
     pub schedule_at: Option<i64>,
 }
 ```
@@ -1466,7 +1467,7 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
         assert_eq!(loaded.cover_path.as_deref(), Some("/tmp/cover.png"));
         assert_eq!(loaded.topics.as_deref(), Some("话题A,话题B"));
         assert_eq!(loaded.thread_segments.as_deref(), Some("第一段||第二段"));
-        assert_eq!(loaded.scheduled_at, Some(1_800_000_000_000));
+        assert_eq!(loaded.scheduled_at, Some(1_800_000_000));
     }
 ```
 
@@ -1523,10 +1524,13 @@ Expected: PASS
         cover_path: task.cover_path.clone(),
         topics,
         thread_segments,
-        // 数据库列名是 scheduled_at，映射到 PublishContent.schedule_at
+        // 数据库列名是 scheduled_at，映射到 PublishContent.schedule_at。
+        // 两侧单位都是**秒**，直接拷贝，**不要**乘以 1000 之类的换算。
         schedule_at: task.scheduled_at,
     };
 ```
+
+**单位务必是秒。** 数据库写入用 `chrono::Utc::now().timestamp()`（秒），`PublishTask.scheduled_at` 也是 `Option<i64>` 秒。若在这里换算成毫秒，定时会差 1000 倍（表现为立刻发布或排到几万年后）。如果将来某个平台的接口要求毫秒，在**该适配器内部**换算，不要在共享的 `PublishContent` 上改单位。
 
 - [ ] **Step 6: 发布前能力校验**
 
