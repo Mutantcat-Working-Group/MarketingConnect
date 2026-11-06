@@ -2261,10 +2261,14 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
 
 ## Task 12: 端到端验证与文档
 
+> **执行状态（2026-11-06）：Step 1 未完成——未做真实平台验证；Step 2 已完成；Step 3 已提交。**
+> 实际执行的命令与原始输出、以及未验证部分的原因，见 `docs/superpowers/plans/2026-11-06-batch1-verification.md`。
+> 本轮验证的边界：**只证明了编译、单元测试、前端类型检查与构建通过**。没有任何真实平台上的登录或发布被验证过（本项目没有真实账号与令牌，且本次任务明确禁止启动浏览器与发起真实网络请求）。知乎 / 小红书 / CSDN 的发布选择器仍是未实测的候选。
+
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: 本地实测两个打样平台**
+- [ ] **Step 1: 本地实测两个打样平台**（**未执行**：需要真实知乎账号与 dev.to 令牌，本项目没有）
 
 **不要**再依赖 `MC_ENGINE_CMD` 指向 Chrome——真 Chrome 已是默认引擎（解析链：`MC_ENGINE_CMD` 显式覆盖 → 本机 Chrome → 应用数据目录中已下载的 CfT → 自动下载）。直接起应用即可。
 
@@ -2277,7 +2281,7 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
 
 顺带确认引擎解析链的实际行为：首次启动应下载 CfT（约 187 MB），之后启动应直接复用（日志出现「使用引擎: …（来源: Downloaded）」）。
 
-- [ ] **Step 2: 更新 README**
+- [X] **Step 2: 更新 README**（已完成。除下表各项外，还按本轮实际把「平台适配」改为 7 行能力表、新增「已知限制」若干条、更新「开发进度」；中继日志文案已用 `grep` 核实为 `丢弃无法解析的 CDP 事件（方法 {}）：继续转发会断开整条连接`）
 
 README 有多处已与现实不符，**必须逐条修正**（行号以当前文件为准）：
 
@@ -2296,7 +2300,7 @@ README 有多处已与现实不符，**必须逐条修正**（行号以当前文
 - 多实例是**按代理**分组的，每个实例用独立 Chrome profile 目录。实测同一 `--user-data-dir` 的第二个 Chrome 进程会因 `ProcessSingleton` 冲突**直接中止**，因此多代理场景必须分目录。
 - 新增平台中，浏览器族的发布页选择器无法预先验证，失败时报错会列出全部尝试过的选择器。
 
-- [ ] **Step 3: 提交并交付**
+- [X] **Step 3: 提交并交付**（另新增验证记录 `docs/superpowers/plans/2026-11-06-batch1-verification.md`）
 
 ```bash
 git add README.md
