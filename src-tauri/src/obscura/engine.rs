@@ -72,6 +72,29 @@ pub fn find_system_chrome() -> Option<PathBuf> {
     first_existing(&system_chrome_paths(), |p| p.is_file())
 }
 
+/// 引擎来源，用于日志与错误提示
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineOrigin {
+    /// MC_ENGINE_CMD 显式指定
+    Explicit,
+    /// 本机已安装的 Chrome
+    System,
+    /// 应用数据目录中已下载的 Chrome for Testing
+    Downloaded,
+}
+
+/// 纯函数：按优先级挑选引擎
+pub fn pick_engine(
+    explicit: Option<PathBuf>,
+    system: Option<PathBuf>,
+    downloaded: Option<PathBuf>,
+) -> Option<(PathBuf, EngineOrigin)> {
+    explicit
+        .map(|p| (p, EngineOrigin::Explicit))
+        .or_else(|| system.map(|p| (p, EngineOrigin::System)))
+        .or_else(|| downloaded.map(|p| (p, EngineOrigin::Downloaded)))
+}
+
 /// Chrome for Testing 官方接口里当前平台的键
 pub fn chrome_for_testing_platform_key() -> Option<&'static str> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -95,6 +118,14 @@ pub fn chrome_for_testing_platform_key() -> Option<&'static str> {
 /// 官方版本清单地址
 pub const CFT_VERSIONS_URL: &str =
     "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json";
+
+/// 锁定的 Chrome for Testing 版本。
+///
+/// 中继的事件补丁是按特定版本的流量推导的，版本漂移会引入新的未知事件，
+/// 因此不要改成「每次启动取最新」。实测该版本可正常下载与解压：
+/// 187.5 MB / 35.4s，解压后 `--version` 输出
+/// `Google Chrome for Testing 157.0.8103.38`。
+pub const LOCKED_CFT_VERSION: &str = "157.0.8103.38";
 
 /// 从官方清单中取出指定平台的 Stable 下载地址
 pub fn stable_download_url(feed: &serde_json::Value, platform_key: &str) -> Option<String> {
@@ -353,5 +384,31 @@ mod tests {
             p.display()
         );
         assert_eq!(p.file_name().unwrap().to_string_lossy(), "chrome");
+    }
+
+    #[test]
+    fn resolution_order_prefers_explicit_then_system() {
+        let explicit = Some(PathBuf::from("/explicit/chrome"));
+        let system = Some(PathBuf::from("/system/chrome"));
+        let downloaded = Some(PathBuf::from("/downloaded/chrome"));
+        let picked = pick_engine(explicit.clone(), system.clone(), downloaded.clone());
+        assert_eq!(picked, Some(("/explicit/chrome".into(), EngineOrigin::Explicit)));
+    }
+
+    #[test]
+    fn resolution_falls_back_to_system_without_explicit() {
+        let picked = pick_engine(None, Some(PathBuf::from("/system/chrome")), Some(PathBuf::from("/downloaded/chrome")));
+        assert_eq!(picked, Some(("/system/chrome".into(), EngineOrigin::System)));
+    }
+
+    #[test]
+    fn resolution_falls_back_to_downloaded_last() {
+        let picked = pick_engine(None, None, Some(PathBuf::from("/downloaded/chrome")));
+        assert_eq!(picked, Some(("/downloaded/chrome".into(), EngineOrigin::Downloaded)));
+    }
+
+    #[test]
+    fn resolution_returns_none_when_all_missing() {
+        assert_eq!(pick_engine(None, None, None), None);
     }
 }

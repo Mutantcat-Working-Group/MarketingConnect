@@ -21,14 +21,14 @@ pub use client::{CdpBrowser, CdpState};
 pub use eval::evaluate;
 pub use relay::CdpRelay;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager}; // app.state::<Db>() 与 app.path()
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 use tracing::info;
@@ -86,40 +86,79 @@ impl ObscuraManager {
             port
         );
 
-        // 构建 sidecar 命令
-        let cmd = if let Some(command) = std::env::var_os("MC_ENGINE_CMD") {
-            // 高级/验证用途：用外部命令充当引擎，便于把应用指向真正的
-            // Chromium 做对照。模板支持 {port} 与 {proxy} 占位符，
-            // 含空格的路径请用引号包起来。
-            let command = command.to_string_lossy();
-            let mut parts = split_command(&command);
-            if parts.is_empty() {
-                anyhow::bail!("MC_ENGINE_CMD 为空");
+        // 构建 sidecar 命令。先解析「用哪个可执行文件」：
+        // 显式覆盖 → 本机 Chrome → 已下载的 Chrome for Testing → 自动下载
+        //
+        // 0) 设置项需要从托管状态取 Db
+        let db = app.state::<crate::db::Db>();
+        let data_dir = app.path().app_data_dir().context("无法确定应用数据目录")?;
+
+        // 锁定版本：第一次下载后写入设置，之后固定复用同一版本
+        let version = db
+            .get_setting("engine_version")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| engine::LOCKED_CFT_VERSION.to_string());
+
+        // 1) 显式覆盖（MC_ENGINE_CMD 的第一段即可执行文件）
+        let explicit = std::env::var("MC_ENGINE_CMD")
+            .ok()
+            .and_then(|raw| split_command(&raw).into_iter().next())
+            .map(PathBuf::from);
+
+        // 2) 本机 Chrome
+        let system = engine::find_system_chrome();
+
+        // 3) 应用数据目录中已下载的引擎
+        let downloaded = engine::installed_chrome_path(&data_dir, &version).filter(|p| p.is_file());
+
+        // 4) 都没有则下载
+        let resolved = match engine::pick_engine(explicit, system, downloaded) {
+            Some(found) => found,
+            None => {
+                let exe = fetch_engine_blocking(data_dir, version.clone())?;
+                let _ = db.set_setting("engine_version", &version);
+                (exe, engine::EngineOrigin::Downloaded)
             }
-            let program = parts.remove(0);
-            let args: Vec<String> = parts
-                .iter()
-                .map(|arg| {
-                    arg.replace("{port}", &port.to_string())
-                        .replace("{proxy}", proxy.unwrap_or(""))
-                })
-                .collect();
-            info!("启动自定义引擎（代理: {}，端口: {}）", proxy.unwrap_or("直连"), port);
-            app.shell().command(program).args(args)
-        } else {
-            let mut cmd = app
-                .shell()
-                .sidecar("obscura")?
-                .args(["serve", "--port", &port.to_string(), "--stealth"]);
-            // 引擎默认不加载任何字体，不指定字体目录时页面文字（含全部中文）
-            // 都会渲染成方块。字体是懒加载，实测零启动开销。
-            for dir in font_dirs() {
-                cmd = cmd.args(["--font-dir", &dir]);
+        };
+        info!("使用引擎: {}（来源: {:?}）", resolved.0.display(), resolved.1);
+
+        let cmd = match resolved.1 {
+            engine::EngineOrigin::Explicit => {
+                // 高级/验证用途：用外部命令充当引擎，便于把应用指向真正的
+                // Chromium 做对照。模板支持 {port} 与 {proxy} 占位符，
+                // 含空格的路径请用引号包起来。
+                let raw = std::env::var("MC_ENGINE_CMD").unwrap_or_default();
+                let mut parts = split_command(&raw);
+                if parts.is_empty() {
+                    anyhow::bail!("MC_ENGINE_CMD 为空");
+                }
+                let program = parts.remove(0);
+                let args: Vec<String> = parts
+                    .iter()
+                    .map(|arg| {
+                        arg.replace("{port}", &port.to_string())
+                            .replace("{proxy}", proxy.unwrap_or(""))
+                    })
+                    .collect();
+                info!("启动自定义引擎（代理: {}，端口: {}）", proxy.unwrap_or("直连"), port);
+                app.shell().command(program).args(args)
             }
-            if let Some(p) = proxy {
-                cmd = cmd.args(["--proxy", p]);
+            engine::EngineOrigin::System | engine::EngineOrigin::Downloaded => {
+                let mut cmd = app
+                    .shell()
+                    .command(resolved.0.to_string_lossy().into_owned())
+                    .args(["serve", "--port", &port.to_string(), "--stealth"]);
+                // 引擎默认不加载任何字体，不指定字体目录时页面文字（含全部中文）
+                // 都会渲染成方块。字体是懒加载，实测零启动开销。
+                for dir in font_dirs() {
+                    cmd = cmd.args(["--font-dir", &dir]);
+                }
+                if let Some(p) = proxy {
+                    cmd = cmd.args(["--proxy", p]);
+                }
+                cmd
             }
-            cmd
         };
 
         let (_, child) = cmd.spawn().context("启动引擎失败")?;
@@ -275,6 +314,36 @@ pub fn font_dirs() -> Vec<String> {
     dirs.into_iter()
         .map(|dir| dir.to_string_lossy().into_owned())
         .collect()
+}
+
+/// 同步函数里不能 await；又因为 `get_or_start` 会被 async 的 `resolve_browser`
+/// 调用，在运行时线程上 `block_on` 会 panic。因此在独立线程上用独立运行时
+/// 执行下载，与 Tauri 的运行时完全隔离。
+fn fetch_engine_blocking(data_dir: std::path::PathBuf, version: String) -> Result<std::path::PathBuf> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || -> Result<std::path::PathBuf> {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("创建下载运行时失败")?;
+                runtime.block_on(async {
+                    let key = engine::chrome_for_testing_platform_key()
+                        .context("当前平台不支持自动获取引擎")?;
+                    let feed: serde_json::Value = reqwest::get(engine::CFT_VERSIONS_URL)
+                        .await
+                        .context("获取引擎版本清单失败")?
+                        .json()
+                        .await
+                        .context("解析引擎版本清单失败")?;
+                    let url = engine::stable_download_url(&feed, key)
+                        .context("版本清单中没有当前平台的引擎")?;
+                    engine::download_chrome(&data_dir, &url, &version).await
+                })
+            })
+            .join()
+            .map_err(|_| anyhow!("下载引擎的线程异常退出"))?
+    })
 }
 
 /// 按 shell 习惯切分命令模板，支持单/双引号包裹带空格的路径。
