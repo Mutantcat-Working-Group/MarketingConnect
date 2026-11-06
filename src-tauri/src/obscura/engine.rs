@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Mutantcat
 //! 浏览器引擎解析链：环境变量 → 本机 Chrome → 已下载 → 自动下载
 
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// 返回第一个通过 `exists` 判定的路径
@@ -71,6 +72,105 @@ pub fn find_system_chrome() -> Option<PathBuf> {
     first_existing(&system_chrome_paths(), |p| p.is_file())
 }
 
+/// Chrome for Testing 官方接口里当前平台的键
+pub fn chrome_for_testing_platform_key() -> Option<&'static str> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    { Some("mac-arm64") }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    { Some("mac-x64") }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    { Some("win64") }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    { Some("linux64") }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    { Some("linux64") }
+    #[cfg(not(any(
+        all(target_os = "macos", any(target_arch = "aarch64", target_arch = "x86_64")),
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))
+    )))]
+    { None }
+}
+
+/// 官方版本清单地址
+pub const CFT_VERSIONS_URL: &str =
+    "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json";
+
+/// 从官方清单中取出指定平台的 Stable 下载地址
+pub fn stable_download_url(feed: &serde_json::Value, platform_key: &str) -> Option<String> {
+    feed.get("channels")?
+        .get("Stable")?
+        .get("downloads")?
+        .get("chrome")?
+        .as_array()?
+        .iter()
+        .find(|item| item.get("platform").and_then(serde_json::Value::as_str) == Some(platform_key))
+        .and_then(|item| item.get("url"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// 从官方清单中取出 Stable 版本号
+pub fn stable_version(feed: &serde_json::Value) -> Option<String> {
+    feed.get("channels")?
+        .get("Stable")?
+        .get("version")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// 引擎在应用数据目录中的安装位置
+pub fn installed_chrome_path(data_dir: &Path, version: &str) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        data_dir.join("engine").join(version).join("chrome-mac").join("Google Chrome for Testing.app").join("Contents").join("MacOS").join("Google Chrome for Testing")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        data_dir.join("engine").join(version).join("chrome-linux64").join("chrome")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        data_dir.join("engine").join(version).join("chrome-win64").join("chrome.exe")
+    }
+}
+
+/// 下载并解压 Chrome for Testing；返回可执行文件路径。
+/// `version` 必须来自配置（锁定版本），不在此函数内取最新。
+pub async fn download_chrome(data_dir: &Path, url: &str, version: &str) -> Result<PathBuf> {
+    let exe = installed_chrome_path(data_dir, version);
+    if exe.is_file() {
+        return Ok(exe);
+    }
+
+    let bytes = reqwest::get(url)
+        .await
+        .context("下载引擎失败")?
+        .error_for_status()
+        .context("下载引擎失败")?
+        .bytes()
+        .await
+        .context("读取引擎数据失败")?;
+
+    let target_dir = data_dir.join("engine").join(version);
+    std::fs::create_dir_all(&target_dir).context("创建引擎目录失败")?;
+
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).context("引擎压缩包无法解析")?;
+    archive.extract(&target_dir).context("解压引擎失败")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&exe).context("引擎文件缺失")?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&exe, perms).context("设置引擎执行权限失败")?;
+    }
+
+    anyhow::ensure!(exe.is_file(), "解压后未找到引擎可执行文件");
+    Ok(exe)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +232,39 @@ mod tests {
                 "{name} 不应被判定为浏览器可执行文件"
             );
         }
+    }
+
+    #[test]
+    fn maps_platform_to_cft_key() {
+        let key = chrome_for_testing_platform_key().expect("受支持平台必须有 CfT 键");
+        assert!(
+            ["mac-arm64", "mac-x64", "win64", "linux64"].contains(&key),
+            "CfT 平台键必须是官方取值，实际为 {key}"
+        );
+    }
+
+    #[test]
+    fn picks_download_url_for_current_platform() {
+        // 取自官方接口的真实响应片段
+        let json = serde_json::json!({
+            "channels": { "Stable": { "version": "157.0.8103.38", "downloads": { "chrome": [
+                { "platform": "mac-arm64", "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.38/mac-arm64/chrome-mac-arm64.zip" },
+                { "platform": "linux64",  "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.38/linux64/chrome-linux64.zip" }
+            ]}}}
+        });
+        let url = stable_download_url(&json, "mac-arm64").expect("应解析出下载地址");
+        assert!(url.starts_with("https://storage.googleapis.com/chrome-for-testing-public/"));
+        assert!(url.ends_with("chrome-mac-arm64.zip"));
+    }
+
+    #[test]
+    fn rejects_missing_platform_in_feed() {
+        let json = serde_json::json!({ "channels": { "Stable": { "version": "1", "downloads": { "chrome": [] }}}});
+        assert_eq!(stable_download_url(&json, "mac-arm64"), None);
+    }
+
+    #[test]
+    fn rejects_malformed_feed() {
+        assert_eq!(stable_download_url(&serde_json::json!({}), "mac-arm64"), None);
     }
 }
