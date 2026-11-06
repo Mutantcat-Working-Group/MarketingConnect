@@ -21,9 +21,14 @@ mod custom;
 mod douyin;
 mod wechat_mp;
 mod xiaohongshu;
+pub mod select;
 pub use csdn::CsdnAdapter;
 pub use custom::{CustomPlatform, CustomPlatformAdapter};
 pub use douyin::DouyinAdapter;
+// 内核中媒体上传（upload_any）与 press_key 要到 Task 9 的知乎适配器才接线，
+// 此处先再导出；加 allow 以免为尚未接线的骨架引入新的编译警告（同 `Capabilities` 的处理）。
+#[allow(unused_imports)]
+pub use select::{ElementOps, click_any, fill_any, press_key, upload_any};
 pub use wechat_mp::WechatMpAdapter;
 pub use xiaohongshu::XiaohongshuAdapter;
 
@@ -130,37 +135,6 @@ pub trait PlatformAdapter: Send + Sync {
 
     /// 会话检测：返回 true 表示会话有效
     async fn check_session(&self, page: &chromiumoxide::Page) -> Result<bool>;
-}
-
-/// 依次尝试多个 CSS 选择器，找到第一个可用元素并填入文本
-///
-/// 各平台前端结构会随版本变化，通过候选选择器提高兼容性；
-/// 返回 true 表示成功填入，全部失败返回 false。
-pub(crate) async fn fill_first(
-    page: &chromiumoxide::Page,
-    selectors: &[&str],
-    value: &str,
-) -> bool {
-    for sel in selectors {
-        if let Ok(el) = page.find_element(*sel).await {
-            if el.click().await.is_ok() && el.type_str(value).await.is_ok() {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// 依次尝试多个 CSS 选择器，点击第一个找到的元素
-pub(crate) async fn click_first(page: &chromiumoxide::Page, selectors: &[&str]) -> bool {
-    for sel in selectors {
-        if let Ok(el) = page.find_element(*sel).await {
-            if el.click().await.is_ok() {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// 获取所有已注册的平台适配器

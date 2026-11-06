@@ -92,11 +92,13 @@ impl PlatformAdapter for CsdnAdapter {
             bail!("会话已失效：请先打开会话完成登录后再发布")
         }
 
+        let ops = crate::platforms::select::PageOps { page };
+
         // 1. 标题
         if let Some(title) = &content.title {
             if !title.is_empty() {
-                let ok = super::fill_first(
-                    page,
+                crate::platforms::fill_any(
+                    &ops,
                     &[
                         "input[placeholder*=\"标题\"]",
                         ".article-bar__title input",
@@ -105,16 +107,18 @@ impl PlatformAdapter for CsdnAdapter {
                     ],
                     title,
                 )
-                .await;
-                if !ok {
-                    bail!("找不到 CSDN 标题输入框（页面结构可能已变更），请在「自定义平台」中配置标题选择器")
-                }
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "找不到 CSDN 标题输入框（页面结构可能已变更）：{e}；请在「自定义平台」中配置标题选择器"
+                    )
+                })?;
             }
         }
 
         // 2. 正文（Markdown 编辑器）
-        let ok = super::fill_first(
-            page,
+        crate::platforms::fill_any(
+            &ops,
             &[
                 ".editor__inner",
                 ".CodeMirror textarea",
@@ -124,14 +128,16 @@ impl PlatformAdapter for CsdnAdapter {
             ],
             &content.text,
         )
-        .await;
-        if !ok {
-            bail!("找不到 CSDN 正文编辑器（页面结构可能已变更），请在「自定义平台」中配置正文选择器")
-        }
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "找不到 CSDN 正文编辑器（页面结构可能已变更）：{e}；请在「自定义平台」中配置正文选择器"
+            )
+        })?;
 
         // 3. 发布按钮（只点击平台特定类名，避免误触保存草稿以外的按钮）
-        let ok = super::click_first(
-            page,
+        crate::platforms::click_any(
+            &ops,
             &[
                 "button.btn-publish",
                 ".btn-publish",
@@ -139,10 +145,10 @@ impl PlatformAdapter for CsdnAdapter {
                 ".article-bar__publish",
             ],
         )
-        .await;
-        if !ok {
-            bail!("内容已填入编辑器，但找不到发布按钮：请在截图视图中确认后手动点击发布")
-        }
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("内容已填入编辑器，但找不到发布按钮：{e}；请在截图视图中确认后手动点击发布")
+        })?;
 
         Ok(())
     }
