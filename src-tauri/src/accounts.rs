@@ -246,6 +246,18 @@ pub async fn save_platform_token(
     Ok(())
 }
 
+/// 查询账号是否已配置 API 令牌（不解密，不触发系统钥匙串）
+///
+/// 前端据此显示「已配置 / 未配置」：只读取密文列是否存在且非空，
+/// 不调用 `Db::get_api_token`，因此不会访问系统钥匙串。
+/// 复用 `find_account` 先确认账号存在，账号不存在时明确报「账号不存在」，
+/// 不静默返回 false——否则前端会把「账号已被删除」误判为「未配置令牌」。
+#[tauri::command]
+pub fn api_token_configured(db: State<'_, Db>, account_id: String) -> Result<bool, String> {
+    find_account(&db, &account_id)?;
+    db.has_api_token(&account_id).map_err(|e| e.to_string())
+}
+
 /// 截取账号当前页面（返回 base64 PNG）
 ///
 /// 用于无头模式下的登录辅助：用户查看截图完成扫码/填表登录。
@@ -334,7 +346,9 @@ pub async fn create_publish_task(
 
 /// 批量发布：将同一内容发布到多个账号（矩阵营销核心工作流）
 ///
-/// 逐个账号处理：未打开会话的自动打开，发布结果按账号返回。
+/// 逐个账号处理，发布结果按账号返回：令牌型平台（`token_hint()` 非空）走
+/// `publish_with_token`，全程不打开浏览器会话；浏览器族平台未打开会话时
+/// 自动打开。单个账号失败只记入该账号的结果 JSON，不中断整批。
 #[tauri::command]
 pub async fn batch_publish(
     app: AppHandle,
@@ -371,45 +385,9 @@ pub async fn batch_publish(
             }
         };
 
-        // 2. 登录交互期间不允许发布流程接管同一页面。
-        if sessions.is_login_active(account_id) {
-            results.push(serde_json::json!({
-                "account_id": account_id,
-                "account_name": account.name,
-                "success": false,
-                "error": "账号正在登录验证，请完成登录后再发布",
-            }));
-            continue;
-        }
-
-        // 3. 打开会话（未打开时自动打开）
-        if sessions.get_page(account_id).is_none() {
-            if let Err(e) = sessions.open(&app, &db, &account).await {
-                results.push(serde_json::json!({
-                    "account_id": account_id,
-                    "account_name": account.name,
-                    "success": false,
-                    "error": format!("打开会话失败: {}", e),
-                }));
-                continue;
-            }
-        }
-
-        // 3. 获取页面
-        let page = match sessions.get_page(account_id) {
-            Some(p) => p,
-            None => {
-                results.push(serde_json::json!({
-                    "account_id": account_id,
-                    "account_name": account.name,
-                    "success": false,
-                    "error": "会话页面不存在",
-                }));
-                continue;
-            }
-        };
-
-        // 4. 调用平台适配器发布
+        // 2. 先构造发布内容：只依赖入参、不依赖浏览器会话，因此上移到
+        //    「解析适配器 / 打开会话」之前——令牌型平台必须能完全不打开
+        //    会话地发布。（与 `scheduler::execute_publish` 同一模式。）
         let publish_content = crate::platforms::PublishContent {
             title: title.clone(),
             text: content.clone(),
@@ -420,60 +398,143 @@ pub async fn batch_publish(
             schedule_at: None,
         };
 
-        let result = match crate::platforms::find_adapter(&account.platform, Some(&db)) {
-            Some(adapter) => {
-                // 发布前能力校验：内容超出平台能力时直接判定该账号失败，
-                // 不调用 adapter.publish，让错误在真正发布前暴露。
-                if let Err(e) = adapter.capabilities().validate(&publish_content) {
-                    let reason = format!("内容超出平台能力: {}", e);
-                    let _ = db.log_event(Some(account_id), "error", "batch_publish", Some(&reason));
-                    results.push(serde_json::json!({
-                        "account_id": account_id,
-                        "account_name": account.name,
-                        "success": false,
-                        "error": reason,
-                    }));
-                    continue;
-                }
-                match adapter.publish(&page, &publish_content).await {
-                    Ok(()) => {
-                        let _ = db.log_event(
-                            Some(account_id),
-                            "info",
-                            "batch_publish",
-                            Some("批量发布成功"),
-                        );
-                        serde_json::json!({
-                            "account_id": account_id,
-                            "account_name": account.name,
-                            "success": true,
-                            "error": null,
-                        })
-                    }
-                    Err(e) => {
-                        let _ = db.log_event(
-                            Some(account_id),
-                            "error",
-                            "batch_publish",
-                            Some(&format!("批量发布失败: {}", e)),
-                        );
-                        serde_json::json!({
-                            "account_id": account_id,
-                            "account_name": account.name,
-                            "success": false,
-                            "error": e.to_string(),
-                        })
-                    }
-                }
+        // 3. 先解析适配器，才能判断该平台是否需要浏览器会话。
+        let adapter = match crate::platforms::find_adapter(&account.platform, Some(&db)) {
+            Some(a) => a,
+            None => {
+                results.push(serde_json::json!({
+                    "account_id": account_id,
+                    "account_name": account.name,
+                    "success": false,
+                    "error": format!("不支持的平台: {}", account.platform),
+                }));
+                continue;
             }
-            None => serde_json::json!({
+        };
+
+        // 结果 JSON 的形状只在这里构造：令牌分支与浏览器分支都调用同一个
+        // 闭包，保证字段名（account_id / account_name / success / error）与
+        // 类型（success 为 bool，error 为 null 或 string）完全一致。
+        let make_result = |ok: bool, error: Option<String>| {
+            serde_json::json!({
                 "account_id": account_id,
                 "account_name": account.name,
-                "success": false,
-                "error": format!("不支持的平台: {}", account.platform),
-            }),
+                "success": ok,
+                "error": error,
+            })
         };
-        results.push(result);
+
+        // 4. 令牌型平台：取令牌 → 能力校验 → publish_with_token。
+        //    全程不调用 sessions.open / get_page，不依赖浏览器引擎。
+        //    该函数逐账号收集结果，因此这里不用 `?`（anyhow::Error 也不能
+        //    直接转成 String）中断整批，失败同样写进该账号的结果 JSON。
+        if adapter.token_hint().is_some() {
+            let token = match db.get_api_token(account_id) {
+                Ok(Some(t)) => t,
+                Ok(None) => {
+                    results.push(make_result(
+                        false,
+                        Some("该账号尚未配置 API 令牌，请在账号设置中粘贴".to_string()),
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    results.push(make_result(
+                        false,
+                        Some(format!("读取 API 令牌失败: {}", e)),
+                    ));
+                    continue;
+                }
+            };
+
+            // 发布前能力校验：内容超出平台能力时直接判定该账号失败，
+            // 不调用 adapter.publish_with_token，让错误在真正发布前暴露。
+            if let Err(e) = adapter.capabilities().validate(&publish_content) {
+                let reason = format!("内容超出平台能力: {}", e);
+                let _ = db.log_event(Some(account_id), "error", "batch_publish", Some(&reason));
+                results.push(make_result(false, Some(reason)));
+                continue;
+            }
+
+            match adapter.publish_with_token(&token, &publish_content).await {
+                Ok(()) => {
+                    let _ = db.log_event(
+                        Some(account_id),
+                        "info",
+                        "batch_publish",
+                        Some("批量发布成功"),
+                    );
+                    results.push(make_result(true, None));
+                }
+                Err(e) => {
+                    let _ = db.log_event(
+                        Some(account_id),
+                        "error",
+                        "batch_publish",
+                        Some(&format!("批量发布失败: {}", e)),
+                    );
+                    results.push(make_result(false, Some(e.to_string())));
+                }
+            }
+            continue;
+        }
+
+        // 5. 浏览器族：到这里才需要会话。
+        //    登录交互期间不允许发布流程接管同一页面。
+        if sessions.is_login_active(account_id) {
+            results.push(make_result(
+                false,
+                Some("账号正在登录验证，请完成登录后再发布".to_string()),
+            ));
+            continue;
+        }
+
+        // 打开会话（未打开时自动打开）
+        if sessions.get_page(account_id).is_none() {
+            if let Err(e) = sessions.open(&app, &db, &account).await {
+                results.push(make_result(false, Some(format!("打开会话失败: {}", e))));
+                continue;
+            }
+        }
+
+        // 获取页面
+        let page = match sessions.get_page(account_id) {
+            Some(p) => p,
+            None => {
+                results.push(make_result(false, Some("会话页面不存在".to_string())));
+                continue;
+            }
+        };
+
+        // 发布前能力校验：内容超出平台能力时直接判定该账号失败，
+        // 不调用 adapter.publish，让错误在真正发布前暴露。
+        if let Err(e) = adapter.capabilities().validate(&publish_content) {
+            let reason = format!("内容超出平台能力: {}", e);
+            let _ = db.log_event(Some(account_id), "error", "batch_publish", Some(&reason));
+            results.push(make_result(false, Some(reason)));
+            continue;
+        }
+
+        match adapter.publish(&page, &publish_content).await {
+            Ok(()) => {
+                let _ = db.log_event(
+                    Some(account_id),
+                    "info",
+                    "batch_publish",
+                    Some("批量发布成功"),
+                );
+                results.push(make_result(true, None));
+            }
+            Err(e) => {
+                let _ = db.log_event(
+                    Some(account_id),
+                    "error",
+                    "batch_publish",
+                    Some(&format!("批量发布失败: {}", e)),
+                );
+                results.push(make_result(false, Some(e.to_string())));
+            }
+        }
     }
 
     Ok(results)

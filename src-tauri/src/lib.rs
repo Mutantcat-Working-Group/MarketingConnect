@@ -106,6 +106,7 @@ pub fn run() {
             accounts::check_account_session,
             accounts::save_account_cookies,
             accounts::save_platform_token,
+            accounts::api_token_configured,
             accounts::capture_screenshot,
             login::set_login_active,
             login::login_action,
