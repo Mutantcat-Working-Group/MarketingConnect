@@ -18,6 +18,7 @@ use async_trait::async_trait;
 pub(crate) mod auth;
 mod csdn;
 mod custom;
+pub mod devto;
 mod douyin;
 mod wechat_mp;
 mod xiaohongshu;
@@ -40,7 +41,7 @@ pub use xiaohongshu::XiaohongshuAdapter;
 /// 这些 ID 为内置适配器保留，自定义平台不可占用，
 /// 否则会与内置适配器重名导致查找结果不确定。
 pub const BUILTIN_PLATFORM_IDS: &[&str] =
-    &["douyin", "xiaohongshu", "wechat_mp", "csdn", "zhihu"];
+    &["douyin", "xiaohongshu", "wechat_mp", "csdn", "zhihu", "devto"];
 
 /// 判断是否为内置平台 ID
 pub fn is_builtin_platform_id(id: &str) -> bool {
@@ -173,6 +174,7 @@ pub fn all_adapters(db: Option<&Db>) -> Vec<Box<dyn PlatformAdapter>> {
         Box::new(wechat_mp::WechatMpAdapter::new()),
         Box::new(csdn::CsdnAdapter::new()),
         Box::new(zhihu::ZhihuAdapter::new()),
+        Box::new(devto::DevToAdapter::new()),
     ];
 
     // 追加自定义平台（DB 查询失败时静默跳过）
