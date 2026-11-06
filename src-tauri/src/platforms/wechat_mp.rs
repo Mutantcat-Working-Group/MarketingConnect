@@ -55,7 +55,13 @@ impl PlatformAdapter for WechatMpAdapter {
     }
 
     fn capabilities(&self) -> super::Capabilities {
-        super::Capabilities { text: true, images: true, video: false, multi_image: true, cover: true, topics: false, thread: false, schedule: false }
+        // publish() 目前只会 bail!（正文为 iframe 编辑器，暂不支持自动发文），
+        // 故 publish 及其余能力位全部为 false，避免用户误以为可自动发布。
+        super::Capabilities {
+            publish: false,
+            text: false, images: false, video: false, multi_image: false,
+            cover: false, topics: false, thread: false, schedule: false,
+        }
     }
 
     async fn login(&self, page: &Page, _username: &str, _password: &str) -> Result<String> {

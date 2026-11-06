@@ -83,12 +83,20 @@ impl PlatformAdapter for ZhihuAdapter {
     }
 
     fn capabilities(&self) -> Capabilities {
+        // 依据下方 publish() 的真实行为：
+        // - 读取 media_paths 并通过 `upload_any(MEDIA, ..)` 一次性上传（可多文件）→
+        //   images / multi_image 为 true；MEDIA 是通用 `input[type='file']`，代码
+        //   无法区分图片与视频，按「宁可保守」原则 video 设为 false。
+        // - 读取 topics → topics 为 true。
+        // - 不读取 cover_path → cover 必须为 false（此前误声明为 true）。
+        // - 不读取 thread_segments / schedule_at → thread / schedule 为 false。
         Capabilities {
+            publish: true,
             text: true,
             images: true,
-            video: true,
+            video: false,
             multi_image: true,
-            cover: true,
+            cover: false,
             topics: true,
             thread: false,
             schedule: false,
@@ -164,6 +172,7 @@ mod tests {
         assert!(caps.text);
         assert!(caps.images);
         assert!(caps.topics);
+        assert!(!caps.cover, "知乎尚未实现封面：publish() 不读 cover_path");
         assert!(!caps.thread, "知乎不支持线程");
     }
 

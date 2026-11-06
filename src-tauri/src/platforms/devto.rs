@@ -53,8 +53,12 @@ impl PlatformAdapter for DevToAdapter {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
+            publish: true,
             text: true, images: false, video: false, multi_image: false,
-            cover: true, topics: true, thread: false, schedule: false,
+            // Task 11 实现图片上传（dev.to 的 main_image 需要已托管的图片 URL，
+            // 本地路径不能直接用）后再改回 true。
+            cover: false,
+            topics: true, thread: false, schedule: false,
         }
     }
 
@@ -109,7 +113,9 @@ mod tests {
     #[test]
     fn declares_api_capabilities() {
         let caps = DevToAdapter::new().capabilities();
-        assert!(caps.text && caps.cover && caps.topics);
+        assert!(caps.publish && caps.text && caps.topics);
+        // 封面尚未实现（main_image 需已托管的图片 URL），Task 11 前必须为 false。
+        assert!(!caps.cover, "Dev.to 封面未实现，不得声明 cover: true");
         assert!(!caps.schedule, "Dev.to 不支持平台内定时");
         assert!(!caps.thread);
     }

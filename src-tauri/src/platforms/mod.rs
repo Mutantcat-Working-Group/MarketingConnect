@@ -54,6 +54,13 @@ pub fn is_builtin_platform_id(id: &str) -> bool {
 /// 前端能力 UI 留到 Task 11。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Capabilities {
+    /// 自动发布是否已实现。false 表示 publish() 目前只会报错，
+    /// 前端应据此提示用户改用「自定义平台」或手动发布。
+    ///
+    /// 注意：其余 flag 描述的是「平台的 publish() 是否真的读取并处理了
+    /// 对应字段」，只有在该适配器真正实现后才可为 true；未实现发布的平台
+    /// 必须把它以及其余全部能力位都设为 false，避免误导用户。
+    pub publish: bool,
     pub text: bool,
     pub images: bool,
     pub video: bool,
@@ -70,12 +77,20 @@ impl Capabilities {
     // 这里只对这一个常量做精确抑制，不再对整个 `impl` 加 allow。
     #[allow(dead_code)]
     pub const TEXT_ONLY: Self = Self {
+        publish: true,
         text: true, images: false, video: false, multi_image: false,
         cover: false, topics: false, thread: false, schedule: false,
     };
 
     /// 校验内容是否超出平台能力，超出则返回可直接展示给用户的原因
     pub fn validate(&self, content: &PublishContent) -> anyhow::Result<()> {
+        // 放在最前面：若自动发布根本未实现，任何字段校验都失去意义，
+        // 直接给出最准确的原因，避免报出「不支持封面」之类的误导信息。
+        if !self.publish {
+            anyhow::bail!(
+                "该平台自动发布尚未实现，请在「自定义平台」中配置选择器，或打开会话后手动发布"
+            );
+        }
         if !self.text && !content.text.trim().is_empty() {
             anyhow::bail!("该平台不支持文本发布");
         }
@@ -204,8 +219,56 @@ mod capability_tests {
     fn builtin_adapters_declare_text_capability() {
         for adapter in all_adapters(None) {
             let caps = adapter.capabilities();
-            assert!(caps.text, "{} 必须支持文本发布", adapter.platform_id());
+            // 只有已实现自动发布的适配器才需要声明文本能力；未实现发布的
+            // （douyin / wechat_mp）全部能力位为 false，由
+            // `unimplemented_publish_adapters_declare_no_capabilities` 专门守护。
+            if caps.publish {
+                assert!(caps.text, "{} 已实现自动发布，必须支持文本发布", adapter.platform_id());
+            }
         }
+    }
+
+    #[test]
+    fn validate_rejects_when_publish_is_unimplemented() {
+        // 即使其余能力位都声明为 true，publish: false 也必须最先拒绝，
+        // 且错误信息要明确说明「尚未实现」，而不是误报某个字段不受支持。
+        let caps = Capabilities {
+            publish: false,
+            text: true, images: true, video: true, multi_image: true,
+            cover: true, topics: true, thread: true, schedule: true,
+        };
+        let content = PublishContent {
+            title: Some("标题".into()), text: "正文".into(), media_paths: Vec::new(),
+            cover_path: None, topics: Vec::new(), thread_segments: Vec::new(), schedule_at: None,
+        };
+        let err = caps.validate(&content).unwrap_err().to_string();
+        assert!(err.contains("尚未实现"), "错误信息应说明尚未实现，实际: {err}");
+    }
+
+    #[test]
+    fn unimplemented_publish_adapters_declare_no_capabilities() {
+        // 守护测试：douyin / wechat_mp 的 publish() 目前只会 bail!，
+        // 因此除 publish 外所有能力位都必须为 false，防止将来只改声明不改实现。
+        for id in ["douyin", "wechat_mp"] {
+            let adapter = find_adapter(id, None).unwrap_or_else(|| panic!("{id} 内置适配器必须存在"));
+            let caps = adapter.capabilities();
+            assert!(!caps.publish, "{id} 自动发布尚未实现，publish 必须为 false");
+            assert!(!caps.text, "{id} 未实现发布，text 必须为 false");
+            assert!(!caps.images, "{id} 未实现发布，images 必须为 false");
+            assert!(!caps.video, "{id} 未实现发布，video 必须为 false");
+            assert!(!caps.multi_image, "{id} 未实现发布，multi_image 必须为 false");
+            assert!(!caps.cover, "{id} 未实现发布，cover 必须为 false");
+            assert!(!caps.topics, "{id} 未实现发布，topics 必须为 false");
+            assert!(!caps.thread, "{id} 未实现发布，thread 必须为 false");
+            assert!(!caps.schedule, "{id} 未实现发布，schedule 必须为 false");
+        }
+    }
+
+    #[test]
+    fn zhihu_does_not_declare_unimplemented_cover() {
+        // 知乎 publish() 不读取 cover_path，不得声明封面能力。
+        let adapter = find_adapter("zhihu", None).expect("知乎内置适配器必须存在");
+        assert!(!adapter.capabilities().cover, "知乎尚未实现封面，cover 必须为 false");
     }
 
     #[test]

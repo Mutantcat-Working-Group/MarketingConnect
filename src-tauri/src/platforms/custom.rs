@@ -62,6 +62,7 @@ impl PlatformAdapter for CustomPlatformAdapter {
     // 有发布页与内容选择器即视为可发文本，媒体能力取决于是否配置了选择器
     fn capabilities(&self) -> super::Capabilities {
         super::Capabilities {
+            publish: true,
             text: self.config.content_selector.is_some(),
             images: false,
             video: false,

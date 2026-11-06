@@ -41,7 +41,13 @@ impl PlatformAdapter for DouyinAdapter {
     }
 
     fn capabilities(&self) -> super::Capabilities {
-        super::Capabilities { text: true, images: true, video: true, multi_image: true, cover: true, topics: true, thread: false, schedule: true }
+        // publish() 目前只会 bail!（见下方注释），故 publish 及其余能力位全部为
+        // false：声明「支持视频/封面/话题/定时」会让用户以为能自动发布，实则必然失败。
+        super::Capabilities {
+            publish: false,
+            text: false, images: false, video: false, multi_image: false,
+            cover: false, topics: false, thread: false, schedule: false,
+        }
     }
 
     async fn login(&self, page: &Page, _username: &str, _password: &str) -> Result<String> {

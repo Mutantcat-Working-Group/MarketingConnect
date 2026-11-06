@@ -46,7 +46,14 @@ impl PlatformAdapter for XiaohongshuAdapter {
     }
 
     fn capabilities(&self) -> super::Capabilities {
-        super::Capabilities { text: true, images: true, video: true, multi_image: true, cover: true, topics: true, thread: false, schedule: false }
+        // publish() 只读取 content.title 与 content.text 并填入编辑器后点击发布；
+        // 它不处理 media_paths / cover_path / topics，故这些位必须为 false——
+        // 否则用户上传的图片、设置的话题会被 validate 放行后被静默丢弃。
+        super::Capabilities {
+            publish: true,
+            text: true, images: false, video: false, multi_image: false,
+            cover: false, topics: false, thread: false, schedule: false,
+        }
     }
 
     async fn login(&self, page: &Page, _username: &str, _password: &str) -> Result<String> {
