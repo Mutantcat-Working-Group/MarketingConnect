@@ -15,6 +15,8 @@
 //! 通过 `cargo run --example cdp_patch_probe` 可重新探测引擎缺哪些字段。
 
 use anyhow::{Context, Result};
+use chromiumoxide::cdp::events::CdpEventMessage;
+use chromiumoxide::types::Message as CdpMessage;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -119,14 +121,17 @@ async fn relay(client: TcpStream, engine_port: u16) -> Result<()> {
             let message = message?;
             let closing = message.is_close();
             let outgoing = match &message {
-                Message::Text(text) => match patch_event(text.as_str()) {
-                    Some(patched) => Message::Text(patched.into()),
-                    None => message,
+                Message::Text(text) => match normalize(text.as_str()) {
+                    RelayAction::Replace(patched) => Some(Message::Text(patched.into())),
+                    RelayAction::Passthrough => Some(message),
+                    RelayAction::Drop => None,
                 },
-                _ => message,
+                _ => Some(message),
             };
-            dump_message(&outgoing);
-            client_tx.send(outgoing).await?;
+            if let Some(outgoing) = outgoing {
+                dump_message(&outgoing);
+                client_tx.send(outgoing).await?;
+            }
             if closing {
                 break;
             }
@@ -139,6 +144,61 @@ async fn relay(client: TcpStream, engine_port: u16) -> Result<()> {
         result = to_client => result.context("转发到客户端失败")?,
     }
     Ok(())
+}
+
+/// 中继对一条消息应采取的动作
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayAction {
+    /// 原样转发
+    Passthrough,
+    /// 用修补后的内容替换
+    Replace(String),
+    /// 丢弃：事件无法被驱动库解析，继续转发会杀掉整条 CDP 连接
+    Drop,
+}
+
+/// 事件帧能否被驱动库（chromiumoxide）解析
+fn parses_as_event(text: &str) -> bool {
+    serde_json::from_str::<CdpMessage<CdpEventMessage>>(text).is_ok()
+}
+
+/// 同一种事件可能每秒出现上百次，避免告警刷屏
+fn warn_dropped_once(method: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    let mut guard = seen.lock().unwrap();
+    if guard.insert(method.to_string()) {
+        tracing::warn!(
+            "丢弃无法解析的 CDP 事件（方法 {}）：继续转发会断开整条连接",
+            method
+        );
+    }
+}
+
+/// 规范化一条中继消息
+pub fn normalize(text: &str) -> RelayAction {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return RelayAction::Passthrough;
+    };
+    // 响应帧（带 id）永不丢弃，否则调用方会永久等待
+    if value.get("method").and_then(Value::as_str).is_none() {
+        return RelayAction::Passthrough;
+    }
+    let patched = patch_event(text);
+    let candidate = patched.as_deref().unwrap_or(text);
+    if parses_as_event(candidate) {
+        return match patched {
+            Some(patched) => RelayAction::Replace(patched),
+            None => RelayAction::Passthrough,
+        };
+    }
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("<未知>");
+    warn_dropped_once(method);
+    RelayAction::Drop
 }
 
 /// 修补引擎缺失的必填字段；返回 `None` 表示无需修改（原样透传）
@@ -403,5 +463,54 @@ mod tests {
         }
         assert!(patch_event("{\"id\":1,\"result\":{}}").is_none());
         assert!(patch_event("not json").is_none());
+    }
+
+    #[test]
+    fn unknown_reason_is_normalized_not_dropped() {
+        // 157 实测：initialFrameNavigation 是 chromiumoxide 0.7 不认识的 reason 取值
+        let raw = r#"{"method":"Page.frameRequestedNavigation","params":{"frameId":"F1","reason":"initialFrameNavigation","url":"https://a.test/","disposition":"currentTab"}}"#;
+        assert!(
+            matches!(normalize(raw), RelayAction::Replace(_)),
+            "未知 reason 应被归一，而不是丢弃"
+        );
+    }
+
+    #[test]
+    fn strips_client_security_state_from_157_shape() {
+        // 157 实测的真实形状：同时带有 siteHasCookieInOtherPartition
+        let raw = r#"{"method":"Network.requestWillBeSentExtraInfo","params":{"requestId":"r1","associatedCookies":[],"headers":{},"connectTiming":{"requestTime":1.0},"clientSecurityState":{"initiatorIsSecureContext":true,"initiatorIPAddressSpace":"Public","privateNetworkRequestPolicy":"Allow"},"siteHasCookieInOtherPartition":false}}"#;
+        let RelayAction::Replace(patched) = normalize(raw) else {
+            panic!("应发生修补，实际为 {:?}", normalize(raw));
+        };
+        assert!(!patched.contains("clientSecurityState"), "元凶字段必须被摘掉");
+        assert!(
+            patched.contains("siteHasCookieInOtherPartition"),
+            "不相关字段不应被动到"
+        );
+    }
+
+    #[test]
+    fn drops_event_that_patching_cannot_fix() {
+        // status 是类型错误，任何补丁都救不回来：必须丢弃而不是原样转发
+        let raw = r#"{"method":"Network.responseReceived","params":{"requestId":"r1","type":"Document","response":{"url":"https://a.test/","status":"not-a-number","headers":{}},"hasExtraInfo":false}}"#;
+        assert_eq!(normalize(raw), RelayAction::Drop);
+    }
+
+    #[test]
+    fn never_drops_responses() {
+        // 响应帧若被丢弃，调用方会永久等待
+        let raw = r#"{"id":1,"result":{"something":"unexpected","nested":{"x":[]}}}"#;
+        assert_eq!(normalize(raw), RelayAction::Passthrough);
+    }
+
+    #[test]
+    fn passthrough_when_no_patch_needed() {
+        let raw = r#"{"method":"Page.frameRequestedNavigation","params":{"frameId":"F1","reason":"scriptInitiated","url":"https://a.test/","disposition":"currentTab"}}"#;
+        assert_eq!(normalize(raw), RelayAction::Passthrough);
+    }
+
+    #[test]
+    fn non_json_text_is_passed_through() {
+        assert_eq!(normalize("not json"), RelayAction::Passthrough);
     }
 }
