@@ -150,7 +150,9 @@ impl ObscuraManager {
                 // obscura 用 `serve --port … --stealth --font-dir …`，而 Chrome
                 // 没有 `serve` 子命令，会把 serve 当成网址、永不在该端口监听。
                 // 真 Chrome 原生加载系统字体，因此不需要 --font-dir。
-                let profile = data_dir.join("chrome-profile");
+                // 每个实例（每个代理）必须用独立的 profile 目录：
+                // Chrome 对同一 --user-data-dir 的第二个进程会直接中止。
+                let profile = engine::chrome_profile_dir(&data_dir, &key);
                 let mut args: Vec<String> = vec![
                     "--headless=new".to_string(),
                     format!("--remote-debugging-port={port}"),

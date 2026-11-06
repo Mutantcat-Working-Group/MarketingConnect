@@ -259,9 +259,79 @@ pub async fn download_chrome(data_dir: &Path, url: &str, version: &str) -> Resul
     Ok(exe)
 }
 
+/// FNV-1a 哈希：稳定、无依赖，用于给 profile 目录名加确定性后缀
+///
+/// 不用 `DefaultHasher`，因为它不保证跨 Rust 版本稳定；后缀一旦变化，
+/// profile 目录就会变，用户会平白丢掉浏览器侧的登录态。
+fn fnv1a(input: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// 按实例键派生 Chrome 用户数据目录
+///
+/// Chrome 对同一 `--user-data-dir` 的第二个进程会直接中止
+/// （ProcessSingleton 冲突），而 `get_or_start` 是按代理分实例的，
+/// 因此每个实例必须有独立目录。键里可能含 `:`、`/`、`@` 等字符，
+/// 需要清洗成文件名安全的形式；末尾附哈希后缀，避免清洗后同形但
+/// 实际不同的键（如 `http://a-b` 与 `http://a_b`）落到同一目录。
+pub fn chrome_profile_dir(data_dir: &Path, instance_key: &str) -> PathBuf {
+    let mut safe: String = instance_key
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    safe.truncate(32);
+    if safe.is_empty() {
+        safe.push_str("direct");
+    }
+    data_dir
+        .join("chrome-profile")
+        .join(format!("{safe}-{:08x}", fnv1a(instance_key) as u32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_dir_is_stable_for_same_key() {
+        let d = Path::new("/data");
+        assert_eq!(
+            chrome_profile_dir(d, "socks5://x:1"),
+            chrome_profile_dir(d, "socks5://x:1"),
+            "同一个键必须每次得到同一目录，否则用户会丢登录态"
+        );
+    }
+
+    #[test]
+    fn profile_dir_differs_per_instance_key() {
+        let d = Path::new("/data");
+        assert_ne!(
+            chrome_profile_dir(d, "http://a:8080"),
+            chrome_profile_dir(d, "http://b:8080"),
+            "不同代理必须用不同 profile，否则第二个实例会中止"
+        );
+        assert_ne!(chrome_profile_dir(d, "direct"), chrome_profile_dir(d, "http://a:8080"));
+    }
+
+    #[test]
+    fn profile_dir_survives_sanitization_collisions() {
+        let d = Path::new("/data");
+        // 清洗后同形、但实际不同的键不能落到同一目录
+        assert_ne!(chrome_profile_dir(d, "http://a-b"), chrome_profile_dir(d, "http://a_b"));
+    }
+
+    #[test]
+    fn profile_dir_name_is_filesystem_safe() {
+        let p = chrome_profile_dir(Path::new("/data"), "http://user:pw@127.0.0.1:8080/pa th");
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        assert!(!name.contains('/') && !name.contains(':') && !name.contains('@') && !name.contains(' '), "目录名不安全: {name}");
+        assert!(p.starts_with(Path::new("/data").join("chrome-profile")));
+    }
 
     #[test]
     fn picks_first_existing_candidate() {
