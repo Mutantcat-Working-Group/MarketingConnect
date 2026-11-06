@@ -12,12 +12,14 @@
 
 ## 已确认的前提（实现时不要再讨论）
 
+> **行号说明：** 本文引用的源码行号来自撰写/复核当时的快照。Task 6、Task 7 落地后行号已发生漂移（例如 `create_task` 由 `db.rs:405` → `:422`、`create_publish_task` 由 `accounts.rs:240` → `:247`、`batch_publish` 由 `:297` → `:310`、`find_account` 由 `:630` → `:658`、`list_platforms` 由 `:445` → `:473`、`api.ts` 的 `listPlatforms` 由 `:187` → `:194`）。查找时请**以函数名 / 字符串为准**，行号只作定位起点。
+
 - 引擎：双轨制，本机 Chrome 优先，缺失时下载 Chrome for Testing 并**锁定版本号**。实测下载源 `https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json` 可达，当前 stable 为 `157.0.8103.38`。
 - 验证：允许本地真 Chromium 实测登录页选择器；打包与发布走 GitHub Actions。
 - 已核实可用的 API（不要再假设不存在）：
   - `chromiumoxide::Element::backend_node_id` 是**公开字段**，类型 `BackendNodeId`（`chromiumoxide-0.7.0/src/element.rs:32`）。
   - `chromiumoxide::Page::execute<T: Command>(cmd)` 存在（`page.rs:186`）。
-  - `chromiumoxide_cdp::cdp::browser_protocol::dom::SetFileInputFilesParams` 实现了 `Command`，`SetFileInputFilesParams::new(files: Vec<String>)` 可用。
+  - `chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams` 实现了 `Command`，`SetFileInputFilesParams::new(files: Vec<String>)` 可用。
   - `Element` **没有** `set_input_files` 方法，上传必须走上面的 CDP 命令。
 - 迁移模式：`let _ = conn.execute("ALTER TABLE x ADD COLUMN y TEXT", []);`（列已存在则忽略错误），见 `src-tauri/src/db.rs:204`。
 - 平台注册：`BUILTIN_PLATFORM_IDS`（`src-tauri/src/platforms/mod.rs:34`），新增内置平台必须同步该常量，否则 `create_account` 会拒绝。
@@ -27,6 +29,15 @@
   - `Db::get_setting` / `Db::set_setting` **已存在**（`db.rs:523`、`:535`），不要再实现一遍。
   - 发布任务的数据库方法是 `create_task`（`db.rs:405`，6 个参数）与 `list_tasks`（`db.rs:438`）；**没有** `create_publish_task` 或 `get_publish_task`。定时列名是 `scheduled_at`，**已存在**，不要新增。
   - `Db` 没有 `open_in_memory()` 公开方法；测试用 `db.rs` 中 `account_tests::db()` 的构造方式（`Db { conn: Mutex::new(Connection::open_in_memory().unwrap()) }` + `migrate()`）。
+
+### 反复踩中的教训（写代码前先按本节核对）
+
+- **crate 的导出路径要以 `Cargo.toml` + 被依赖 crate 的 `lib.rs` 为准，不要凭直觉写。** `chromiumoxide` 0.7 只把 `chromiumoxide_cdp` 的 `cdp` 模块重导出为 `chromiumoxide::cdp`（`chromiumoxide-0.7.0/src/lib.rs:68`：`pub use chromiumoxide_cdp::cdp;`），并把 `chromiumoxide_types` 重导出为 `chromiumoxide::types`（同文件 `:69`：`pub use chromiumoxide_types::{self as types, …};`）。`chromiumoxide_cdp` / `chromiumoxide_types` **不是本项目的直接依赖**（`src-tauri/Cargo.toml` 只有 `chromiumoxide = "0.7"`），所以 **不要**写 `chromiumoxide_cdp::…` 或 `chromiumoxide_types::…`，也**不要**为此往 `Cargo.toml` 里加依赖。已知正确的替代写法：
+  - 文件上传：用 `chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams` + `Page::execute`。`Element` **没有** `set_input_files`；先 `find_element`，再把公开字段 `element.backend_node_id` 赋给 params 的 `backend_node_id`。
+  - 键盘：用 `chromiumoxide::cdp::browser_protocol::input::DispatchKeyEventParams`。`Page` **没有** `keyboard()`；照 `src-tauri/src/login.rs:6` 的导入与 `:42-52` 的既有写法。
+  - CDP 事件类型：`chromiumoxide::cdp::events::CdpEventMessage`、`chromiumoxide::types::Message`（`obscura/relay.rs:18-19` 即此写法）。
+- **单位锚点：`PublishContent.schedule_at` 与数据库 `publish_tasks.scheduled_at` 都是「秒」**（写入用 `chrono::Utc::now().timestamp()`）。任何地方都不要换算成毫秒；若某个平台的接口要求毫秒，在**该适配器内部**换算，不要改共享字段的单位。
+- **改一处要连带改全：** 给 `PlatformAdapter` 增加方法后，**所有实现者**都要补齐（`douyin` / `xiaohongshu` / `wechat_mp` / `csdn` / `custom` / `zhihu` / `devto`）；给结构体增加字段后，**所有构造点**都要补齐（`PublishContent` 的构造点在 `scheduler.rs` 与 `accounts.rs`，另有各测试）。因此每个任务的 **Files 列表必须包含这些文件**，否则执行者会漏改、编译失败。
 
 
 ## File Structure
@@ -897,7 +908,7 @@ pub fn normalize(text: &str) -> RelayAction {
 
 /// 用驱动库自身的反序列化器验证事件可被消费
 fn parses_as_event(text: &str) -> bool {
-    serde_json::from_str::<chromiumoxide_types::Message<chromiumoxide_cdp::cdp::events::CdpEventMessage>>(text).is_ok()
+    serde_json::from_str::<chromiumoxide::types::Message<chromiumoxide::cdp::events::CdpEventMessage>>(text).is_ok()
 }
 
 /// 兼容包装：保留原有单测与调用点可用
@@ -911,12 +922,7 @@ pub fn patch_event(text: &str) -> Option<String> {
 
 把原 `patch_event` 中的方法分派逻辑抽为 `fn patch_value(value: &Value) -> Option<Value>`，内部沿用已有的 `patch_request_will_be_sent` / `patch_response_received` / `patch_request_will_be_sent_extra_info` / `patch_frame_requested_navigation`。
 
-在 `Cargo.toml` 的 `[dependencies]` 中加入（两者已在 lock 文件中，可离线解析）：
-
-```toml
-chromiumoxide_cdp = "0.7"
-chromiumoxide_types = "0.7"
-```
+**不要新增依赖。** `chromiumoxide` 0.7 已经重导出 `chromiumoxide::cdp`（含 `browser_protocol` / `events`）与 `chromiumoxide::types`（见「已确认的前提」）；`chromiumoxide_cdp` / `chromiumoxide_types` 不是本项目的直接依赖，写进 `Cargo.toml` 反而多一层不该有的耦合。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -935,7 +941,7 @@ match normalize(&text) {
         let method = serde_json::from_str::<Value>(&text).ok()
             .and_then(|v| v.get("method").and_then(Value::as_str).map(str::to_owned))
             .unwrap_or_else(|| "未知".to_string());
-        tracing::warn!("丢弃驱动库无法解析的事件: {method}");
+        tracing::warn!("丢弃无法解析的 CDP 事件（方法 {}）：继续转发会断开整条连接", method);
     }
 }
 ```
@@ -954,6 +960,7 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
 **Files:**
 - Modify: `src-tauri/src/platforms/mod.rs`
 - Modify: `src-tauri/src/platforms/{douyin,xiaohongshu,wechat_mp,csdn,custom}.rs`
+- Modify: `src-tauri/src/accounts.rs`、`src-tauri/src/scheduler.rs`（`PublishContent` 的构造点，Step 6 要补字段）
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -1193,7 +1200,7 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
 //! 平台发布页在登录态之后，无法预先验证选择器，因此统一采用「按顺序尝试
 //! 多个候选，全部失败则报出尝试过的全部选择器」。
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 
 /// 元素操作抽象，便于用假实现做单元测试
@@ -1376,7 +1383,7 @@ impl ElementOps for PageOps<'_> {
 
     async fn upload(&self, selector: &str, paths: &[String]) -> Result<()> {
         let element = self.page.find_element(selector).await?;
-        let mut params = chromiumoxide_cdp::cdp::browser_protocol::dom::SetFileInputFilesParams::new(
+        let mut params = chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams::new(
             paths.to_vec(),
         );
         params.backend_node_id = Some(element.backend_node_id);
@@ -1402,7 +1409,7 @@ pub async fn press_key(page: &Page, key: &str) -> Result<()> {
         if key == "Enter" && event == "keyDown" {
             raw["text"] = serde_json::json!("\r");
         }
-        let params: chromiumoxide_cdp::cdp::browser_protocol::input::DispatchKeyEventParams =
+        let params: chromiumoxide::cdp::browser_protocol::input::DispatchKeyEventParams =
             serde_json::from_value(raw).context("按键参数无效")?;
         page.execute(params).await.context("发送按键失败")?;
     }
@@ -1416,9 +1423,34 @@ pub async fn press_key(page: &Page, key: &str) -> Result<()> {
 pub use select::{click_any, fill_any, press_key, upload_any, ElementOps};
 ```
 
-- [ ] **Step 5: 让既有适配器改用内核**
+- [ ] **Step 5: 让既有适配器改用内核（签名不同，不是 drop-in 替换）**
 
-把 `src-tauri/src/platforms/xiaohongshu.rs` 与 `csdn.rs` 中现有的 `fill_first` / `click_first` 调用替换为 `crate::platforms::fill_any` / `click_any`。`mod.rs` 中原有的 `fill_first` / `click_first` 若已无调用者则删除，避免两套并行。
+`fill_first` / `click_first` 与内核**签名不同**，不能只把函数名换掉：
+
+| 旧（`mod.rs` 中的 `pub(crate) fn`，待删） | 新（`select.rs`） |
+|---|---|
+| `fill_first(page: &Page, selectors: &[&str], value: &str) -> bool` | `fill_any(ops: &O, selectors: &[&str], value: &str) -> Result<String>` |
+| `click_first(page: &Page, selectors: &[&str]) -> bool` | `click_any(ops: &O, selectors: &[&str]) -> Result<String>` |
+
+即：旧函数收 `&Page`、返回 `bool`；新函数收实现了 `ElementOps` 的 `ops`、返回 `Result<String>`。因此 `xiaohongshu.rs` / `csdn.rs` 必须这样改：
+
+1. `page` 就绪后先构造一次 ops：`let ops = crate::platforms::select::PageOps { page };`（`PageOps` 的字段就是 `pub page: &'a Page`）。
+2. 把 `let ok = super::fill_first(page, SELECTORS, value).await; if !ok { bail!("自定义文案") }` 改成**基于 `Result` 的判断**：`.is_err()` 等价于原来的 `!ok`，但更推荐直接把错误 `?` 出去（见下）。
+3. **原本的自定义 `bail!` 文案会丢失**：`fill_any` 自带的错误只列出试过的选择器（如「找不到可填入的输入框，已尝试: …」）。要保留原提示，必须用 `map_err` 把上下文拼回去：
+
+```rust
+    crate::platforms::fill_any(&ops, SELECTORS, value)
+        .await
+        .map_err(|e| anyhow::anyhow!(
+            "找不到……输入框（页面结构可能已变更）：{e}；请在「自定义平台」中配置……选择器"
+        ))?;
+```
+
+   `click_first` 同理改成 `crate::platforms::click_any(&ops, SELECTORS).await.map_err(|e| anyhow::anyhow!("…：{e}；…"))?;`
+
+   若只写裸的 `crate::platforms::fill_any(&ops, …).await?;` 也能编译，但会丢掉原来的中文提示；**要保留就必须显式 `map_err`**。（现有 `xiaohongshu.rs` / `csdn.rs` 已按此写法落地，可对照。）
+
+`mod.rs` 中原有的 `fill_first` / `click_first` 已无调用者，删除，避免两套并行。
 
 Run: `cd src-tauri && cargo build 2>&1 | grep -E "^error" | head -20`
 Expected: 无输出（无编译错误）
@@ -1443,6 +1475,10 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
 
 `create_task` 的真实签名是 `create_task(account_id, title, content, media_paths, cron_expr, scheduled_at)`（`db.rs:405`），本任务在末尾追加 `cover_path` / `topics` / `thread_segments` 三个参数。数据库列名是 **`scheduled_at`（已存在，不要新增列）**。检索用已有的 `list_tasks(account_id)`（`db.rs:438`）。
 
+**必须同步改唯一调用点：** `create_task` 目前只有一个调用者——`accounts.rs:240` 的 `create_publish_task` 命令，它在 `accounts.rs:251` 调用 `create_task`。加了 3 个参数后，这里必须补传实参（例如先都传 `None`），否则编译直接失败。
+
+**若要让新字段真正能被填写**，还需（本任务不强制，接线见 Task 11）：把 `create_publish_task` 的命令签名（`accounts.rs:240-249`）与前端 `src/api.ts:154-161` 的 `createPublishTask` 参数、`src/components/AccountWorkspace.vue` 的表单一起补上 `cover_path` / `topics` / `thread_segments`。只改数据库层而不改这两处，界面就永远无法提供这三个字段（见 Step 5 的取舍说明）。
+
 在 `db.rs` 的 `account_tests` 模块中追加（复用该模块已有的 `db()` 与 `NewAccount` 构造方式）：
 
 ```rust
@@ -1456,7 +1492,7 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
             Some("正文"),
             None,
             None,
-            Some(1_800_000_000_000),
+            Some(1_800_000_000),
             Some("/tmp/cover.png"),
             Some("话题A,话题B"),
             Some("第一段||第二段"),
@@ -1532,13 +1568,38 @@ Expected: PASS
 
 **单位务必是秒。** 数据库写入用 `chrono::Utc::now().timestamp()`（秒），`PublishTask.scheduled_at` 也是 `Option<i64>` 秒。若在这里换算成毫秒，定时会差 1000 倍（表现为立刻发布或排到几万年后）。如果将来某个平台的接口要求毫秒，在**该适配器内部**换算，不要在共享的 `PublishContent` 上改单位。
 
-- [ ] **Step 6: 发布前能力校验**
+> **取舍说明（有意为之）：** 目前前端与命令都还没有 `cover_path` / `topics` / `thread_segments` 三个字段——`create_publish_task` 命令签名（`accounts.rs:240-249`）与 `src/api.ts:154-161` 的 `createPublishTask` 都只到 `scheduled_at`。因此这三列在界面上无法被填写，`scheduler.rs` 读到的 `task.cover_path` / `task.topics` / `task.thread_segments` **永远是 `None`**，构造出的对应字段永远是 `None` / 空 `Vec`（`scheduled_at` 例外，命令已有该参数，能真正贯通）。**本批次只贯通数据库与调度，不把这三个字段暴露到前端**：填写 UI 与能力校验一起留到 Task 11 做。这是有意为之，不是遗漏。
 
-在 `scheduler.rs` 与 `accounts.rs` 调用 `adapter.publish(...)` 之前插入校验，让错误在发布前就暴露：
+- [ ] **Step 6: 发布前能力校验（两个调用点写法不同，不能照抄一行）**
+
+在 `scheduler.rs` 与 `accounts.rs` 调用 `adapter.publish(...)` 之前做能力校验，但两处函数的返回类型不同，`?` 不能通用，必须分别处理：
+
+- `scheduler.rs` 的 `execute_publish` 返回 `()`（`scheduler.rs:114`），没有 `Result` 可以传播，必须显式记失败并 `return`：
 
 ```rust
-    adapter.capabilities().validate(&content)?;
+    if let Err(e) = adapter.capabilities().validate(&content) {
+        fail_task(&db, task_id, &format!("内容超出平台能力: {}", e));
+        return;
+    }
 ```
+
+- `accounts.rs` 的 `batch_publish` 返回 `Result<Vec<serde_json::Value>, String>`（`accounts.rs:297`），而 `validate` 返回 `anyhow::Error`，两者不能自动转换；这里也应像既有的发布错误一样把失败记进该账号的结果，而不是用 `?` 中止整个批次：
+
+```rust
+    if let Err(e) = adapter.capabilities().validate(&publish_content) {
+        let _ = db.log_event(Some(account_id), "error", "batch_publish",
+            Some(&format!("内容超出平台能力: {}", e)));
+        results.push(serde_json::json!({
+            "account_id": account_id,
+            "account_name": account.name,
+            "success": false,
+            "error": e.to_string(),
+        }));
+        continue;
+    }
+```
+
+  （若确实想在最外层用 `?`，必须写成 `.map_err(|e| e.to_string())?`，因为 `anyhow::Error` 不能转 `String`。）
 
 - [ ] **Step 7: 编译、测试、提交**
 
@@ -1560,6 +1621,8 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
 - Modify: `src-tauri/src/accounts.rs`
 - Modify: `src-tauri/src/lib.rs`
 
+> **前置依赖：不能单独执行本任务。** `accounts.api_token_enc` 列的迁移只在 **Task 7 Step 3** 里添加（`ALTER TABLE accounts ADD COLUMN api_token_enc BLOB`，在 `db.rs` 的 `migrate()` 中，例如 `db.rs:218`）。因此必须在 **Task 7 完成后**再做 Task 8，否则 `save_api_token` / `get_api_token` 的 SQL 会报 `no such column: api_token_enc`。
+
 - [ ] **Step 1: 写失败的测试**
 
 加解密不在 `credentials.rs`，而是 **`crate::crypto::encrypt` / `crate::crypto::decrypt`**（`src-tauri/src/crypto.rs:42`、`:62`）。时间戳沿用 `chrono::Utc::now().timestamp()`。
@@ -1567,6 +1630,9 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
 在 `db.rs` 的 `account_tests` 模块中追加（复用该模块已有的 `db()` 与 `new_account()`）：
 
 ```rust
+    // 该测试会经由 crypto::encrypt → 系统钥匙串，见下方「CI 会挂起」说明；
+    // 标记 #[ignore]，CI 的 cargo test --lib 不会执行它（编译仍会校验签名）。
+    #[ignore = "依赖系统钥匙串，只在本地手动运行"]
     #[test]
     fn api_token_round_trips_encrypted() {
         let db = db();
@@ -1590,10 +1656,17 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
     }
 ```
 
+**CI 会挂起——这个测试不能出现在默认的 `cargo test --lib` 里。** `Db::save_api_token` → `crate::crypto::encrypt` → `get_or_create_master_key()` → `keyring::Entry`（`crypto.rs:17-18`），也就是系统钥匙串，和无交互环境下会阻塞等待授权的 `test_encrypt_decrypt_roundtrip`（`crypto.rs:93`）走的是同一条路径。因此：
+
+- 给测试加 `#[ignore = "依赖系统钥匙串，只在本地手动运行"]`（已在上面的代码里），CI 的 `cargo test --lib` 只报告它被 ignored，不会执行、不会挂起。
+- 本地手动验证：`cd src-tauri && cargo test --lib -- --ignored api_token_round_trips_encrypted`。
+- CI 现有命令只 `--skip test_encrypt_decrypt_roundtrip`（`.github/workflows/build.yml:117-118`）。**`--skip` 是按测试名子串匹配**：新测试名 `api_token_round_trips_encrypted` 并不包含 `test_encrypt_decrypt_roundtrip` 这个子串，所以**不会**被那条 `--skip` 顺带跳过——正因如此才必须显式 `#[ignore]`。（反之，若日后把测试命名成包含该子串，就会被静默跳过；命名时保持两名字不互相包含。）
+- 备选：改成不触发钥匙串的断言路径（例如只用固定字节写读 `api_token_enc` 列），代价是测不到加密本身；两条路任选其一，但**不要**保留「不加 `#[ignore]` 且期望 `cargo test --lib` 全 PASS」的写法。
+
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd src-tauri && cargo test --lib api_token_round_trips_encrypted`
-Expected: FAIL，报 `no method named save_api_token`
+Run: `cd src-tauri && cargo test --lib`
+Expected: 编译失败（`no method named save_api_token`）——编译错误与 `#[ignore]` 无关，仍会暴露；修好实现后该测试默认不执行。
 
 - [ ] **Step 3: 实现令牌读写**
 
@@ -1660,8 +1733,11 @@ pub async fn save_platform_token(
     account_id: String,
     token: String,
 ) -> Result<(), String> {
-    let account = db.get_account(&account_id).map_err(|e| e.to_string())?
-        .ok_or_else(|| "账号不存在".to_string())?;
+    // `Db` **没有** `get_account` 方法（只有 list_accounts / get_account_password /
+    // get_account_cookies），不要写 `db.get_account(...)`。改用 accounts.rs 已有
+    // 的私有函数 `find_account`（`accounts.rs:630`），它返回 Result<Account, String>，
+    // 与本命令的返回类型一致，可直接 `?`。
+    let account = find_account(&db, &account_id)?;
     let adapter = crate::platforms::find_adapter(&account.platform, Some(&db))
         .ok_or_else(|| "平台适配器不存在".to_string())?;
     anyhow::ensure!(adapter.token_hint().is_some(), "该平台不支持令牌登录").map_err(|e| e.to_string())?;
@@ -1676,7 +1752,7 @@ pub async fn save_platform_token(
 - [ ] **Step 5: 运行测试并提交**
 
 Run: `cd src-tauri && cargo test --lib && cargo build`
-Expected: 全部 PASS，编译无错误
+Expected: 全部 PASS，编译无错误。注意 `api_token_round_trips_encrypted` 会显示为 **ignored**（因为依赖系统钥匙串），这是预期结果；本地需要时用 `cargo test --lib -- --ignored api_token_round_trips_encrypted` 单独跑。
 
 ```bash
 git add src-tauri/src/
@@ -1757,6 +1833,8 @@ use async_trait::async_trait;
 use chromiumoxide::Page;
 
 const CREATOR_URL: &str = "https://www.zhihu.com/";
+/// 登录页（注意：登录表单在 `/signin`，**不是**首页 `/`）
+const LOGIN_URL: &str = "https://www.zhihu.com/signin";
 const WRITE_URL: &str = "https://zhuanlan.zhihu.com/write";
 
 /// 登录表单选择器（实测填写）
@@ -1795,12 +1873,29 @@ impl PlatformAdapter for ZhihuAdapter {
     }
 
     async fn login(&self, page: &Page, username: &str, password: &str) -> Result<String> {
-        page.goto(CREATOR_URL).await.context("打开知乎失败")?;
+        // 登录页是 /signin（不是首页）。首页 CREATOR_URL 在未登录时会跳转，
+        // 但选择器直接依赖登录表单，必须显式打开登录页。
+        page.goto(LOGIN_URL).await.context("打开知乎登录页失败")?;
+        // 等待 SPA 渲染登录组件，否则 find_element 会在空 DOM 上失败
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
         let ops = super::select::PageOps { page };
         super::select::fill_any(&ops, LOGIN_USER, username).await?;
         super::select::fill_any(&ops, LOGIN_PASS, password).await?;
         super::select::click_any(&ops, LOGIN_SUBMIT).await?;
-        Ok(String::new())
+        // 提交后等待跳转/渲染，再读取 cookie
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // 按既有适配器（csdn / xiaohongshu / wechat_mp）的模式返回 **cookie JSON**，
+        // 不能返回空串——调用方要用这段 JSON 持久化会话。
+        let cookies = page.get_cookies().await.context("获取 cookie 失败")?;
+        let json = serde_json::to_string(&cookies).context("cookie 序列化失败")?;
+
+        let url = page.url().await?.unwrap_or_default();
+        if url.contains("signin") || url.contains("login") {
+            anyhow::bail!("尚未登录：请在截图视图中完成验证码/登录后点击「保存 Cookie」");
+        }
+        Ok(json)
     }
 
     async fn publish(&self, page: &Page, content: &PublishContent) -> Result<()> {
@@ -2021,25 +2116,18 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
 **Files:**
 - Modify: `src-tauri/src/scheduler.rs`
 - Modify: `src-tauri/src/accounts.rs`
+- Modify: `src-tauri/src/platforms/mod.rs`（加 trait 默认方法 `publish_with_token`）
+- Modify: `src-tauri/src/platforms/devto.rs`（`DevToAdapter` 实现 `publish_with_token`）
 - Modify: `src/api.ts`
 - Modify: `src/components/CustomPlatforms.vue`
 
-- [ ] **Step 1: 令牌型平台发布绕过浏览器**
+> 漏掉 `platforms/mod.rs` 与 `platforms/devto.rs` 会直接编译失败：新增的 trait 方法必须由 `DevToAdapter` 实现。参见「已确认的前提 → 反复踩中的教训」。
 
-在 `scheduler.rs` 与 `accounts.rs` 的发布路径中，令牌型平台不需要打开会话页面：
+- [ ] **Step 1: 令牌型平台发布绕过浏览器（必须重排「开会话」与「解析适配器」的顺序）**
 
-```rust
-// 令牌型平台：直接调用适配器发布，不打开浏览器会话
-if adapter.token_hint().is_some() {
-    let token = db.get_api_token(&account_id)?
-        .ok_or_else(|| anyhow!("该账号尚未配置 API 令牌"))?;
-    adapter.publish_with_token(&token, &content).await?;
-} else {
-    // 既有浏览器路径
-}
-```
+**只替换 publish 调用达不到目标。** 两条发布路径都在解析 adapter **之前**就打开了浏览器会话：`scheduler.rs` 的 `sessions.open(...)` 在 `:160`、`find_adapter` 在 `:195`；`accounts.rs` 的 `sessions.open(...)` 在 `:344`、`find_adapter` 在 `:381`。令牌型平台若仍先开会话，引擎不可用时照样失败。因此必须**先解析 adapter → 看 `token_hint()` 是否为 `Some` → 令牌型走令牌通道且完全不碰 `sessions`，浏览器族才 `sessions.open`**。
 
-在 trait 中增加：
+先在 trait 增加默认方法（`src-tauri/src/platforms/mod.rs`，与 Task 8 的 `verify_token` 放一起）：
 
 ```rust
     /// 令牌型平台发布（浏览器族返回不支持）
@@ -2048,43 +2136,111 @@ if adapter.token_hint().is_some() {
     }
 ```
 
-`DevToAdapter` 实现 `publish_with_token`：POST `{API_BASE}/articles`，`header("api-key", token)`，body 为 `build_article_payload(content)`；非 2xx 时把响应体摘要放进错误信息。
+`src-tauri/src/platforms/devto.rs` 的 `DevToAdapter` 实现它：POST `{API_BASE}/articles`，`header("api-key", token)`，body 为 `build_article_payload(content)`；非 2xx 时把响应体摘要放进错误信息。
 
-- [ ] **Step 2: 前端类型与调用**
+**`execute_publish`（`scheduler.rs`）返回 `()`，且该文件只 `use anyhow::Result;`（没有导入 `anyhow!`）**，所以上面那段 `?` / `anyhow!` 的写法放不进去。要改成：把 `PublishContent` 的构造上移到解析 adapter 之前，令牌分支用 `match` 显式记失败，浏览器分支保持原样：
 
-在 `src/api.ts` 追加：
+```rust
+    // 先构造内容（原来在打开会话之后）
+    let content = PublishContent { /* … 见 Task 7 Step 5 … */ };
+
+    // 先解析适配器，才能判断是否需要浏览器会话
+    let adapter = match platforms::find_adapter(&account.platform, Some(&db)) {
+        Some(a) => a,
+        None => { fail_task(&db, task_id, &format!("不支持的平台: {}", account.platform)); return; }
+    };
+
+    if adapter.token_hint().is_some() {
+        // 令牌型：全程不打开会话、不依赖引擎
+        let token = match db.get_api_token(account_id) {
+            Ok(Some(t)) => t,
+            Ok(None) => { fail_task(&db, task_id, "该账号尚未配置 API 令牌"); return; }
+            Err(e) => { fail_task(&db, task_id, &format!("读取令牌失败: {}", e)); return; }
+        };
+        if let Err(e) = adapter.capabilities().validate(&content) {
+            fail_task(&db, task_id, &format!("内容超出平台能力: {}", e)); return;
+        }
+        match adapter.publish_with_token(&token, &content).await {
+            Ok(()) => {
+                let _ = db.update_task_status(task_id, "done", Some("发布成功"));
+                let _ = db.log_event(Some(account_id), "info", "publish", Some("发布成功"));
+            }
+            Err(e) => fail_task(&db, task_id, &format!("发布失败: {}", e)),
+        }
+        return;
+    }
+
+    // 浏览器族：到这里才 sessions.open(...) / get_page(...)，随后走既有 publish 路径
+```
+
+**`batch_publish`（`accounts.rs`）返回 `Result<Vec<serde_json::Value>, String>`**，`anyhow::Error` 不能转 `String`，所以同样不能用 `?`。在每个账号的循环里先解析 adapter，令牌型跳过 `:344` 的 `sessions.open`，错误用 `results.push(...)` + `continue` 报告（注意 `publish_content` 现在建在 `accounts.rs:371`、即开会话之后，也要一并上移到 token 分支之前）：
+
+```rust
+    let adapter = match crate::platforms::find_adapter(&account.platform, Some(&db)) {
+        Some(a) => a,
+        None => { results.push(serde_json::json!({ /* … "error": "不支持的平台" … */ })); continue; }
+    };
+    if adapter.token_hint().is_some() {
+        let token = match db.get_api_token(account_id) {
+            Ok(Some(t)) => t,
+            Ok(None) => { results.push(serde_json::json!({ /* … "error": "该账号尚未配置 API 令牌" … */ })); continue; }
+            Err(e) => { results.push(serde_json::json!({ /* … "error": format!("读取令牌失败: {}", e) … */ })); continue; }
+        };
+        if let Err(e) = adapter.capabilities().validate(&publish_content) {
+            results.push(serde_json::json!({ /* … "error": e.to_string() … */ })); continue;
+        }
+        match adapter.publish_with_token(&token, &publish_content).await {
+            Ok(()) => results.push(serde_json::json!({ /* … "success": true … */ })),
+            Err(e) => results.push(serde_json::json!({ /* … "success": false, "error": e.to_string() … */ })),
+        }
+        continue;
+    }
+    // 浏览器族：才 sessions.get_page / sessions.open（既有 :344 起）
+```
+
+（`db` 是 `State<Db>`，`account_id: &str`；`db.get_api_token` 返回 `anyhow::Result<Option<String>>`，所以必须 `match`/`map_err`，不能 `?`。）
+
+- [ ] **Step 2: 前端类型与调用（改既有 `PlatformInfo`，不要新增 `Platform` 类型）**
+
+`src/api.ts:187` **已经**导出了 `listPlatforms`，`src/api.ts:109` 也已有 `PlatformInfo`。再写一次 `export const listPlatforms` 或新增 `Platform` 类型都会造成重复声明，`vue-tsc --noEmit` 报错、`pnpm build` 失败。正确做法是**扩展既有的 `PlatformInfo`**、复用既有 `listPlatforms`，只新增令牌保存调用：
 
 ```ts
+/** 平台信息 */
+export interface PlatformInfo {
+  id: string;
+  name: string;
+  capabilities: PlatformCapabilities;
+  /** 令牌型平台为 true（后端 `token_hint()` 非空） */
+  tokenSupported: boolean;
+}
+
 export interface PlatformCapabilities {
   text: boolean; images: boolean; video: boolean; multi_image: boolean;
   cover: boolean; topics: boolean; thread: boolean; schedule: boolean;
 }
 
-export interface Platform {
-  id: string;
-  name: string;
-  capabilities: PlatformCapabilities;
-}
-
-export const listPlatforms = () => invoke<Platform[]>("list_platforms");
-
 export const savePlatformToken = (accountId: string, token: string) =>
   invoke<void>("save_platform_token", { accountId, token });
 ```
 
-同时把 `list_platforms` 的返回值在后端补上 `capabilities`：
+**不要**再写 `export const listPlatforms = …`（已存在于 `:187`）。
+
+既有消费方只读 `id` / `name`，新增字段向后兼容、不会破坏它们：`BatchPublish.vue:160` 用 `new Map(list.map((p) => [p.id, p.name]))`，`AccountSidebar.vue:20,68` 用 `platforms.value = await api.listPlatforms()` 与 `find((p) => p.id === id)?.name`。若想更保守可把新字段标为可选（`capabilities?: …`），但本任务会在同一提交里让后端返回它们。
+
+同时把后端 `list_platforms`（`accounts.rs`）的返回值补上能力与令牌标记：
 
 ```rust
         .map(|a| serde_json::json!({
             "id": a.platform_id(),
             "name": a.display_name(),
             "capabilities": a.capabilities(),
+            "tokenSupported": a.token_hint().is_some(),
         }))
 ```
 
 - [ ] **Step 3: 前端能力驱动 UI 与令牌入口**
 
-在 `CustomPlatforms.vue`（或账号编辑处）按 `capabilities` 显示可用字段，禁用不支持的项并给出原因；令牌型平台（`token_hint` 非空时后端返回 `tokenSupported: true`，需在 Step 2 的 JSON 中一并加上）显示「粘贴 API 令牌」输入框，调用 `savePlatformToken`，成功与失败都要有明确提示。
+按 `capabilities` 显示可用字段，禁用不支持的项并给出原因；令牌型平台（后端已返回 `tokenSupported: true`，见 Step 2）显示「粘贴 API 令牌」输入框，调用 `savePlatformToken`，成功与失败都要有明确提示。前端已有的 `PlatformInfo` 若尚未返回新字段，UI 应以「字段缺失即视为不支持」降级，不要在类型上强解引用。
 
 - [ ] **Step 4: 构建与测试**
 
@@ -2128,7 +2284,7 @@ README 有多处已与现实不符，**必须逐条修正**（行号以当前文
 | 现位置 | 现在写的是 | 应改为 |
 |---|---|---|
 | 「已知限制」关于 Obscura 事件缺字段那条 | 只提 Obscura 缺 `initialPriority` 等字段 | 补充两类新版 Chromium 的版本差事件：`Network.requestWillBeSentExtraInfo` 的 `clientSecurityState`、`Page.frameRequestedNavigation` 的未知 `reason`（如 `initialFrameNavigation`）。这些是在真 Chrome 157 上实测到的，与 Obscura 无关 |
-| 同一条 | 未提兜底 | 增加：中继对驱动库仍无法解析的事件**丢弃并告警**（日志关键字「丢弃无法解析的 CDP 事件」），不再让整条连接断开；响应帧永不丢弃 |
+| 同一条 | 未提兜底 | 增加：中继对驱动库仍无法解析的事件**丢弃并告警**（日志关键字用真实文案「丢弃无法解析的 CDP 事件（方法 …）：继续转发会断开整条连接」，见 `src-tauri/src/obscura/relay.rs:173`；`grep 丢弃无法解析的 CDP 事件` 即可命中），不再让整条连接断开；响应帧永不丢弃 |
 | 「引擎默认不加载任何字体」整条 | 描述 Obscura 的字体缺陷与 `MC_FONT_DIRS` | 标注为**仅在使用 Obscura 时成立**。默认真 Chrome 原生加载系统字体，无此问题 |
 | 「Obscura 无法完成带风控平台的登录」整条 | 把「用 `MC_ENGINE_CMD` 换真 Chromium」写成变通手段 | 改为：真 Chrome 已是默认引擎，无需 `MC_ENGINE_CMD`；该变量仍可用于对照验证。说明解析链与锁定版本 `157.0.8103.38` |
 | 「技术栈」里「浏览器引擎：Obscura」 | 列 Obscura 为引擎 | 改为：浏览器引擎为 Chrome / Chrome for Testing（版本由配置锁定）；Obscura 仅在 `MC_ENGINE_CMD` 显式指定时使用 |
