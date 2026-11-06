@@ -72,6 +72,25 @@ pub fn find_system_chrome() -> Option<PathBuf> {
     first_existing(&system_chrome_paths(), |p| p.is_file())
 }
 
+/// 真 Chrome 启动时使用的 User-Agent
+///
+/// 无头模式默认会带上 `HeadlessChrome` 标记，是明显的自动化特征。
+/// 这里按平台与主版本号生成与之匹配的普通 UA（主版本取自锁定版本，
+/// 保证与实际内核一致）。
+pub fn chrome_user_agent(version: &str) -> String {
+    let major = version.split('.').next().unwrap_or(version);
+    let platform = if cfg!(target_os = "macos") {
+        "Macintosh; Intel Mac OS X 10_15_7"
+    } else if cfg!(target_os = "windows") {
+        "Windows NT 10.0; Win64; x64"
+    } else {
+        "X11; Linux x86_64"
+    };
+    format!(
+        "Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+}
+
 /// 引擎来源，用于日志与错误提示
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineOrigin {
@@ -410,5 +429,18 @@ mod tests {
     #[test]
     fn resolution_returns_none_when_all_missing() {
         assert_eq!(pick_engine(None, None, None), None);
+    }
+
+    #[test]
+    fn user_agent_has_no_headless_marker() {
+        let ua = chrome_user_agent("157.0.8103.38");
+        assert!(!ua.to_lowercase().contains("headless"), "UA 不得含无头标记: {ua}");
+        assert!(ua.contains("Chrome/157.0.0.0"), "UA 主版本必须与引擎一致: {ua}");
+        assert!(ua.starts_with("Mozilla/5.0 ("), "UA 格式必须标准: {ua}");
+    }
+
+    #[test]
+    fn user_agent_tolerates_malformed_version() {
+        assert!(chrome_user_agent("weird").contains("Chrome/weird.0.0.0"));
     }
 }

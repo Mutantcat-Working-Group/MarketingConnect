@@ -116,7 +116,8 @@ impl ObscuraManager {
         let resolved = match engine::pick_engine(explicit, system, downloaded) {
             Some(found) => found,
             None => {
-                let exe = fetch_engine_blocking(data_dir, version.clone())?;
+                // 后面的真 Chrome 分支还要用 data_dir 拼 profile 目录，故此处传副本
+                let exe = fetch_engine_blocking(data_dir.clone(), version.clone())?;
                 let _ = db.set_setting("engine_version", &version);
                 (exe, engine::EngineOrigin::Downloaded)
             }
@@ -145,19 +146,29 @@ impl ObscuraManager {
                 app.shell().command(program).args(args)
             }
             engine::EngineOrigin::System | engine::EngineOrigin::Downloaded => {
-                let mut cmd = app
-                    .shell()
-                    .command(resolved.0.to_string_lossy().into_owned())
-                    .args(["serve", "--port", &port.to_string(), "--stealth"]);
-                // 引擎默认不加载任何字体，不指定字体目录时页面文字（含全部中文）
-                // 都会渲染成方块。字体是懒加载，实测零启动开销。
-                for dir in font_dirs() {
-                    cmd = cmd.args(["--font-dir", &dir]);
-                }
+                // 这是真正的 Chrome / Chromium，参数与 obscura 完全不同：
+                // obscura 用 `serve --port … --stealth --font-dir …`，而 Chrome
+                // 没有 `serve` 子命令，会把 serve 当成网址、永不在该端口监听。
+                // 真 Chrome 原生加载系统字体，因此不需要 --font-dir。
+                let profile = data_dir.join("chrome-profile");
+                let mut args: Vec<String> = vec![
+                    "--headless=new".to_string(),
+                    format!("--remote-debugging-port={port}"),
+                    // 外部 CDP 客户端（本机中继）需要被允许
+                    "--remote-allow-origins=*".to_string(),
+                    "--no-first-run".to_string(),
+                    "--no-default-browser-check".to_string(),
+                    "--disable-blink-features=AutomationControlled".to_string(),
+                    format!("--user-data-dir={}", profile.display()),
+                    "--window-size=1280,860".to_string(),
+                    format!("--user-agent={}", engine::chrome_user_agent(&version)),
+                ];
                 if let Some(p) = proxy {
-                    cmd = cmd.args(["--proxy", p]);
+                    args.push(format!("--proxy-server={p}"));
                 }
-                cmd
+                app.shell()
+                    .command(resolved.0.to_string_lossy().into_owned())
+                    .args(args)
             }
         };
 
@@ -174,7 +185,7 @@ impl ObscuraManager {
         }
         if !ready {
             let _ = child.kill();
-            anyhow::bail!("obscura 实例启动超时（端口 {} 未就绪）", port);
+            anyhow::bail!("引擎启动超时（端口 {} 未就绪）", port);
         }
 
         info!("obscura 实例就绪（端口 {}）", port);
