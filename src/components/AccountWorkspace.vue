@@ -1,11 +1,12 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Mutantcat -->
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import * as api from "../api";
 import LoginPanel from "./LoginPanel.vue";
 
-const props = defineProps<{ accountId: string }>();
+// accountId 用于各项按账号的命令；platform 用于查平台信息（令牌能力）
+const props = defineProps<{ accountId: string; platform: string }>();
 const emit = defineEmits<{ close: [id: string] }>();
 
 const tasks = ref<api.PublishTask[]>([]);
@@ -23,6 +24,91 @@ const message = ref("");
 const checking = ref(false);
 const sensitiveResult = ref<api.SensitiveCheckResult | null>(null);
 
+// ---------- 平台 API 令牌（仅令牌型平台显示） ----------
+const platformInfo = ref<api.PlatformInfo | null>(null);
+/** 已配置 / 未配置；null 表示状态未知（未读取或不支持令牌） */
+const tokenConfigured = ref<boolean | null>(null);
+const tokenStateLoading = ref(false);
+const tokenInput = ref("");
+const tokenSaving = ref(false);
+/** 令牌提示文本（沿用本组件既有的 message 风格，但独立于发布表单） */
+const tokenMessage = ref("");
+const tokenMessageKind = ref<"info" | "ok" | "err">("info");
+
+/** 仅当平台声明支持令牌时显示该区块 */
+const tokenSupported = computed(() => platformInfo.value?.tokenSupported === true);
+const tokenHint = computed(() => platformInfo.value?.tokenHint ?? null);
+
+const tokenStateText = computed(() => {
+  if (!tokenSupported.value) return "";
+  if (tokenStateLoading.value) return "读取中…";
+  if (tokenConfigured.value === true) return "已配置";
+  if (tokenConfigured.value === false) return "未配置";
+  return "状态未知";
+});
+
+const tokenStateClass = computed(() => {
+  if (tokenStateLoading.value) return "unknown";
+  if (tokenConfigured.value === true) return "on";
+  if (tokenConfigured.value === false) return "off";
+  return "unknown";
+});
+
+function setTokenMessage(kind: "info" | "ok" | "err", text: string) {
+  tokenMessageKind.value = kind;
+  tokenMessage.value = text;
+}
+
+/** 重新读取「是否已配置令牌」 */
+async function refreshTokenConfigured() {
+  if (!tokenSupported.value) {
+    tokenConfigured.value = null;
+    return;
+  }
+  tokenStateLoading.value = true;
+  try {
+    tokenConfigured.value = await api.apiTokenConfigured(props.accountId);
+  } catch (e) {
+    tokenConfigured.value = null;
+    setTokenMessage("err", `读取令牌状态失败: ${e}`);
+  } finally {
+    tokenStateLoading.value = false;
+  }
+}
+
+/** 读取当前账号所属平台的信息（能力 / 令牌支持 / 令牌提示） */
+async function loadPlatformInfo() {
+  try {
+    const list = await api.listPlatforms();
+    platformInfo.value = list.find((p) => p.id === props.platform) ?? null;
+  } catch {
+    // 读取失败时按「不支持令牌」处理：不显示令牌区块，也不影响发布表单
+    platformInfo.value = null;
+  }
+}
+
+async function saveToken() {
+  const token = tokenInput.value.trim();
+  if (!token) {
+    setTokenMessage("err", "请先粘贴 API 令牌");
+    return;
+  }
+  tokenSaving.value = true;
+  setTokenMessage("info", "校验并保存中…");
+  try {
+    await api.savePlatformToken(props.accountId, token);
+    tokenInput.value = "";
+    // 保存成功后从后端重新读取状态，而不是本地假定成功
+    await refreshTokenConfigured();
+    setTokenMessage("ok", "令牌已校验并保存");
+  } catch (e) {
+    // 后端会校验令牌有效性，失败原因对用户很重要，必须原样显示
+    setTokenMessage("err", `保存失败: ${e}`);
+  } finally {
+    tokenSaving.value = false;
+  }
+}
+
 async function loadTasks() {
   loading.value = true;
   try {
@@ -32,6 +118,21 @@ async function loadTasks() {
   } finally {
     loading.value = false;
   }
+}
+
+/** 切换账号 / 平台时重置并重新加载与该账号绑定的数据 */
+async function reloadForAccount() {
+  title.value = "";
+  content.value = "";
+  mediaPaths.value = "";
+  cronExpr.value = "";
+  message.value = "";
+  sensitiveResult.value = null;
+  tokenInput.value = "";
+  tokenMessage.value = "";
+  tokenConfigured.value = null;
+  await Promise.all([loadTasks(), loadPlatformInfo()]);
+  await refreshTokenConfigured();
 }
 
 async function checkWords() {
@@ -54,11 +155,11 @@ async function submitTask() {
   message.value = "";
   try {
     await api.createPublishTask({
-      account_id: props.accountId,
+      accountId: props.accountId,
       title: title.value || undefined,
       content: content.value,
-      media_paths: mediaPaths.value || undefined,
-      cron_expr: cronExpr.value || undefined,
+      mediaPaths: mediaPaths.value || undefined,
+      cronExpr: cronExpr.value || undefined,
     });
     message.value = "任务已创建";
     title.value = "";
@@ -73,7 +174,10 @@ async function submitTask() {
   }
 }
 
-onMounted(loadTasks);
+// 组件实例会跨账号复用（App.vue 只换 prop），因此切换账号时必须重新加载
+watch(() => [props.accountId, props.platform], reloadForAccount);
+
+onMounted(reloadForAccount);
 </script>
 
 <template>
@@ -86,6 +190,31 @@ onMounted(loadTasks);
     <div class="workspace-body">
       <!-- 登录编辑与发布任务相互独立 -->
       <LoginPanel :key="accountId" :account-id="accountId" />
+
+      <!-- 平台 API 令牌：仅令牌型平台显示，令牌按账号存储 -->
+      <section v-if="tokenSupported" class="panel">
+        <div class="panel-head">
+          <h3>平台 API 令牌</h3>
+          <span class="token-state" :class="tokenStateClass">{{ tokenStateText }}</span>
+        </div>
+        <p v-if="tokenHint" class="token-hint">令牌获取位置：{{ tokenHint }}</p>
+        <p v-else class="token-hint">该平台通过 API 令牌发布。</p>
+        <div class="token-form">
+          <input
+            v-model="tokenInput"
+            type="password"
+            autocomplete="off"
+            placeholder="粘贴 API 令牌"
+            @keyup.enter="saveToken"
+          />
+          <button class="primary" :disabled="tokenSaving || !tokenInput.trim()" @click="saveToken">
+            {{ tokenSaving ? "校验中…" : "保存令牌" }}
+          </button>
+        </div>
+        <p v-if="tokenMessage" class="token-message" :class="tokenMessageKind">
+          {{ tokenMessage }}
+        </p>
+      </section>
 
       <!-- 新建发布任务 -->
       <section class="panel">
@@ -224,6 +353,65 @@ onMounted(loadTasks);
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* ---------- 平台 API 令牌 ---------- */
+.token-state {
+  flex-shrink: 0;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  border-radius: 99px;
+}
+
+.token-state.on {
+  color: var(--success);
+  background: rgba(52, 201, 142, 0.12);
+}
+
+.token-state.off {
+  color: var(--warning);
+  background: rgba(245, 166, 35, 0.12);
+}
+
+.token-state.unknown {
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+}
+
+.token-hint {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.token-form {
+  display: flex;
+  gap: 8px;
+}
+
+.token-form input {
+  flex: 1;
+  min-width: 0;
+}
+
+.token-message {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.token-message.ok {
+  color: var(--success);
+}
+
+.token-message.err {
+  color: var(--danger);
+}
+
+.token-message.info {
+  color: var(--text-secondary);
 }
 
 .form label {

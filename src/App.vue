@@ -280,6 +280,7 @@ onBeforeUnmount(() => {
           <AccountWorkspace
             v-if="activeAccount"
             :account-id="activeAccount.id"
+            :platform="activeAccount.platform"
             @close="closeTab"
           />
           <div v-else class="placeholder">

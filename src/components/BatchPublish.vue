@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Mutantcat -->
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import * as api from "../api";
 
 const props = defineProps<{ accounts: api.Account[] }>();
@@ -23,8 +23,8 @@ const messageKind = ref<"info" | "ok" | "err">("info");
 const checking = ref(false);
 const sensitiveResult = ref<api.SensitiveCheckResult | null>(null);
 
-// 平台 ID -> 显示名（如 wechat_mp -> 公众号）
-const platformNames = ref<Map<string, string>>(new Map());
+// 平台 ID -> 平台信息（显示名 + 能力矩阵；如 wechat_mp -> 公众号）
+const platforms = ref<Map<string, api.PlatformInfo>>(new Map());
 
 const STATUS_TEXT: Record<string, string> = {
   online: "在线",
@@ -33,7 +33,16 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 function platformName(id: string): string {
-  return platformNames.value.get(id) ?? id;
+  return platforms.value.get(id)?.name ?? id;
+}
+
+/**
+ * 安全取平台能力：
+ * - 旧后端不返回 `capabilities` → 降级为「只支持文本」，而不是抛错让面板不可用；
+ * - 未知平台同样是降级。
+ */
+function capsOf(platformId: string): api.PlatformCapabilities {
+  return api.platformCapabilities(platforms.value.get(platformId));
 }
 
 function statusText(status: string): string {
@@ -59,16 +68,110 @@ const grouped = computed(() => {
 
 const successCount = computed(() => results.value.filter((r) => r.success).length);
 
+// ---------- 能力驱动：按所选账号的平台能力决定表单可用性 ----------
+
+/** 已选账号 */
+const selectedAccounts = computed(() =>
+  props.accounts.filter((a) => selected.value.has(a.id))
+);
+
+const hasSelection = computed(() => selectedAccounts.value.length > 0);
+
+/** 已选账号涉及的平台能力（按平台去重） */
+const selectedCaps = computed(() => {
+  const map = new Map<string, api.PlatformCapabilities>();
+  for (const a of selectedAccounts.value) {
+    map.set(a.platform, capsOf(a.platform));
+  }
+  return map;
+});
+
+/** 在已选平台中筛出「不满足条件」的平台显示名，用于给出可读的原因 */
+function platformsFailing(pred: (c: api.PlatformCapabilities) => boolean): string[] {
+  return [...selectedCaps.value.entries()]
+    .filter(([, c]) => !pred(c))
+    .map(([id]) => platformName(id));
+}
+
+/** 自动发布尚未实现的平台（如抖音 / 微信公众号）：必须阻止提交 */
+const unimplementedPlatforms = computed(() => platformsFailing((c) => c.publish));
+
+/** 不支持文本发布的平台 */
+const noTextPlatforms = computed(() => platformsFailing((c) => c.text));
+
+/** 全部选中平台都不支持图片/视频时才禁用媒体输入 */
+const mediaSupported = computed(() =>
+  [...selectedCaps.value.values()].every((c) => c.images || c.video)
+);
+
+/** 未选账号时不限制；选中后按选中平台能力取交集 */
+const mediaEnabled = computed(() => !hasSelection.value || mediaSupported.value);
+
+/** 媒体输入被禁用的原因 */
+const mediaDisabledReason = computed(() => {
+  if (mediaEnabled.value) return "";
+  const names = platformsFailing((c) => c.images || c.video);
+  return `${names.join("、")} 当前只支持文本发布，无法上传媒体文件`;
+});
+
+/** 支持媒体但不支持多文件的平台 */
+const multiMediaLimitedPlatforms = computed(() =>
+  [...selectedCaps.value.entries()]
+    .filter(([, c]) => (c.images || c.video) && !c.multi_image)
+    .map(([id]) => platformName(id))
+);
+
+/** 已选平台的能力摘要，让用户知道这次发布会带上什么 */
+const capabilitySummary = computed(() =>
+  [...selectedCaps.value.entries()]
+    .map(([id, c]) => {
+      const items: string[] = [];
+      if (c.text) items.push("文本");
+      if (c.images) items.push("图片");
+      if (c.video) items.push("视频");
+      if (c.topics) items.push("话题");
+      if (c.thread) items.push("线程");
+      if (c.cover) items.push("封面");
+      if (c.schedule) items.push("定时");
+      return `${platformName(id)}：${items.length > 0 ? items.join(" / ") : "无可用能力"}`;
+    })
+    .join("；")
+);
+
+/** 不支持自动发布的平台给出的统一提示 */
+const UNIMPLEMENTED_HINT =
+  "该平台自动发布尚未实现，请在「自定义平台」中配置选择器，或打开会话后手动发布";
+
+const unimplementedMessage = computed(() =>
+  `${unimplementedPlatforms.value.join("、")}：${UNIMPLEMENTED_HINT}`
+);
+
 const canPublish = computed(
-  () => selected.value.size > 0 && content.value.trim().length > 0 && !publishing.value
+  () =>
+    selected.value.size > 0 &&
+    content.value.trim().length > 0 &&
+    !publishing.value &&
+    unimplementedPlatforms.value.length === 0 &&
+    noTextPlatforms.value.length === 0
 );
 
 /** 底栏提示：始终告诉用户下一步该做什么 */
 const hint = computed(() => {
   if (props.accounts.length === 0) return "还没有账号，请先在左侧新增账号";
   if (selected.value.size === 0) return "请先勾选要发布的账号";
+  if (unimplementedPlatforms.value.length > 0)
+    return `${unimplementedPlatforms.value.join("、")} 无法自动发布，请取消选择这些账号`;
+  if (noTextPlatforms.value.length > 0)
+    return `${noTextPlatforms.value.join("、")} 不支持文本发布，请取消选择这些账号`;
   if (!content.value.trim()) return "请填写正文内容";
   return `将把当前内容发布到 ${selected.value.size} 个账号`;
+});
+
+// 媒体输入被禁用时清空已填内容，避免留下「填了却发不出去」的路径
+watch(mediaSupported, (ok) => {
+  if (ok || !mediaPaths.value.trim()) return;
+  mediaPaths.value = "";
+  setMessage("err", `${mediaDisabledReason.value}，已自动清空媒体路径`);
 });
 
 function groupStats(list: api.Account[]) {
@@ -110,8 +213,21 @@ async function publish() {
     setMessage("err", "请先选择账号");
     return;
   }
+  // 能力闸门：publish=false 的平台必须阻止提交，不能让用户以为能发
+  if (unimplementedPlatforms.value.length > 0) {
+    setMessage("err", unimplementedMessage.value);
+    return;
+  }
+  if (noTextPlatforms.value.length > 0) {
+    setMessage("err", `${noTextPlatforms.value.join("、")} 不支持文本发布，请取消选择这些账号`);
+    return;
+  }
   if (!content.value.trim()) {
     setMessage("err", "请输入发布内容");
+    return;
+  }
+  if (mediaPaths.value.trim() && !mediaSupported.value) {
+    setMessage("err", `${mediaDisabledReason.value}，请取消选择这些账号`);
     return;
   }
   publishing.value = true;
@@ -119,10 +235,10 @@ async function publish() {
   results.value = [];
   try {
     results.value = await api.batchPublish({
-      account_ids: [...selected.value],
+      accountIds: [...selected.value],
       title: title.value || undefined,
       content: content.value,
-      media_paths: mediaPaths.value || undefined,
+      mediaPaths: mediaPaths.value || undefined,
     });
     const ok = successCount.value;
     const fail = results.value.length - ok;
@@ -158,9 +274,9 @@ onMounted(async () => {
   document.addEventListener("keydown", onKey);
   try {
     const list = await api.listPlatforms();
-    platformNames.value = new Map(list.map((p) => [p.id, p.name]));
+    platforms.value = new Map(list.map((p) => [p.id, p]));
   } catch {
-    // 忽略：回退显示原始平台 ID
+    // 忽略：回退显示原始平台 ID，并按「只支持文本」降级（capsOf 已兜底）
   }
 });
 
@@ -224,6 +340,13 @@ onBeforeUnmount(() => {
                 <input type="checkbox" :checked="selected.has(a.id)" @change="toggle(a.id)" />
                 <span class="account-name">{{ a.name }}</span>
                 <span class="account-username">{{ a.username }}</span>
+                <span
+                  v-if="!capsOf(a.platform).publish"
+                  class="cap-tag warn"
+                  :title="UNIMPLEMENTED_HINT"
+                >
+                  不可自动发布
+                </span>
                 <span class="platform-tag">{{ platformName(a.platform) }}</span>
                 <span class="badge" :class="a.status">{{ statusText(a.status) }}</span>
               </label>
@@ -241,6 +364,17 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="fields">
+            <!-- 能力提示：不支持的能力必须给出原因，而不是让用户提交后才失败 -->
+            <p v-if="unimplementedPlatforms.length > 0" class="cap-notice err">
+              {{ unimplementedMessage }}
+            </p>
+            <p v-else-if="noTextPlatforms.length > 0" class="cap-notice err">
+              {{ noTextPlatforms.join("、") }} 不支持文本发布，请取消选择这些账号
+            </p>
+            <p v-else-if="hasSelection" class="cap-notice info">
+              按平台能力发布 — {{ capabilitySummary }}
+            </p>
+
             <label class="field">
               <span class="field-label">标题 <em>可选</em></span>
               <input v-model="title" placeholder="留空时由平台自动取正文首行" />
@@ -271,8 +405,16 @@ onBeforeUnmount(() => {
 
             <label class="field">
               <span class="field-label">媒体路径 <em>可选</em></span>
-              <input v-model="mediaPaths" placeholder="逗号分隔多个文件路径，例如 /a.jpg,/b.mp4" />
+              <input
+                v-model="mediaPaths"
+                :disabled="!mediaEnabled"
+                placeholder="逗号分隔多个文件路径，例如 /a.jpg,/b.mp4"
+              />
             </label>
+            <p v-if="!mediaEnabled" class="cap-notice err">{{ mediaDisabledReason }}</p>
+            <p v-else-if="multiMediaLimitedPlatforms.length > 0" class="cap-notice warn">
+              {{ multiMediaLimitedPlatforms.join("、") }} 不支持一次上传多个文件，请只填一个路径
+            </p>
           </div>
         </section>
 
@@ -463,6 +605,51 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: 99px;
   white-space: nowrap;
+}
+
+/* ---------- 能力提示 ---------- */
+.cap-tag {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  font-size: 11px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+
+.cap-tag.warn {
+  color: var(--warning);
+  background: rgba(245, 166, 35, 0.12);
+}
+
+.cap-notice {
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 6px;
+  word-break: break-word;
+}
+
+.cap-notice.err {
+  color: var(--danger);
+  background: rgba(240, 82, 79, 0.1);
+  border: 1px solid rgba(240, 82, 79, 0.3);
+}
+
+.cap-notice.warn {
+  color: var(--warning);
+  background: rgba(245, 166, 35, 0.1);
+  border: 1px solid rgba(245, 166, 35, 0.3);
+}
+
+.cap-notice.info {
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+
+input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .empty-state {

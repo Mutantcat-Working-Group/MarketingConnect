@@ -105,10 +105,65 @@ export interface EngineStatus {
   count: number;
 }
 
-/** 平台信息 */
+/** 平台能力矩阵
+ *
+ * 字段名与 Rust `platforms::Capabilities` 的 serde 序列化**完全一致**
+ * （snake_case），因此这里保持 snake_case，不做 camelCase 转换。
+ * 全部为 boolean，语义见 Rust 侧注释：
+ * - `publish`：该平台**自动发布是否已实现**（false 表示 publish() 只会报错）；
+ * - 其余位表示该平台是否真的读取并处理了对应发布字段。
+ */
+export interface PlatformCapabilities {
+  /** 该平台自动发布是否已实现 */
+  publish: boolean;
+  text: boolean;
+  images: boolean;
+  video: boolean;
+  multi_image: boolean;
+  cover: boolean;
+  topics: boolean;
+  thread: boolean;
+  schedule: boolean;
+}
+
+/** 平台信息
+ *
+ * 后三个字段是后端新增的，设为可选以兼容旧后端（旧后端只返回 id/name）。
+ */
 export interface PlatformInfo {
   id: string;
   name: string;
+  /** 该平台是否支持 API 令牌登录（后端 `token_hint()` 非空） */
+  tokenSupported?: boolean;
+  /** 令牌获取位置提示；浏览器族平台为 null */
+  tokenHint?: string | null;
+  /** 平台能力矩阵；旧后端不返回该字段 */
+  capabilities?: PlatformCapabilities;
+}
+
+/** 读不到能力矩阵时的降级：按「只支持文本发布」处理
+ *
+ * 旧后端不返回 `capabilities`，若直接解引用可选字段会抛错并导致整个面板不可用。
+ * `publish: true` 表示仍按可实现发布处理（降级而非禁用），与 Rust 的
+ * `Capabilities::TEXT_ONLY` 保持一致。
+ */
+export const TEXT_ONLY_CAPABILITIES: PlatformCapabilities = {
+  publish: true,
+  text: true,
+  images: false,
+  video: false,
+  multi_image: false,
+  cover: false,
+  topics: false,
+  thread: false,
+  schedule: false,
+};
+
+/** 安全地取平台能力：缺字段 / 平台未知时降级为「只支持文本」 */
+export function platformCapabilities(
+  info: PlatformInfo | undefined | null
+): PlatformCapabilities {
+  return info?.capabilities ?? TEXT_ONLY_CAPABILITIES;
 }
 
 // ---------- 账号 ----------
@@ -151,20 +206,27 @@ export const captureScreenshot = (accountId: string) =>
 
 // ---------- 发布任务 ----------
 
+/**
+ * 创建发布任务
+ *
+ * 注意：Tauri 2 默认把 Rust 命令参数名转为 camelCase 作为 IPC 键，
+ * 因此这里必须是 camelCase（`accountId` / `mediaPaths` / ...）；
+ * 传 snake_case 会在运行时直接报「缺少参数」。
+ */
 export const createPublishTask = (params: {
-  account_id: string;
+  accountId: string;
   title?: string;
   content?: string;
-  media_paths?: string;
-  cron_expr?: string;
+  mediaPaths?: string;
+  cronExpr?: string;
   /** 单位：秒（与数据库 scheduled_at 列一致） */
-  scheduled_at?: number;
+  scheduledAt?: number;
   /** 封面图路径；前端控件留到 Task 11 的能力 UI */
-  cover_path?: string;
+  coverPath?: string;
   /** 话题标签，以 `,` 分隔存储 */
   topics?: string;
   /** 线程分段，以 `||` 分隔存储 */
-  thread_segments?: string;
+  threadSegments?: string;
 }) => invoke<PublishTask>("create_publish_task", params);
 
 export const listPublishTasks = (accountId: string) =>
@@ -178,12 +240,16 @@ export interface BatchPublishResult {
   error: string | null;
 }
 
-/** 批量发布：同一内容发布到多个账号 */
+/**
+ * 批量发布：同一内容发布到多个账号
+ *
+ * 键名同样必须是 camelCase（Rust 侧为 `account_ids` / `media_paths`）。
+ */
 export const batchPublish = (params: {
-  account_ids: string[];
+  accountIds: string[];
   title?: string;
   content: string;
-  media_paths?: string;
+  mediaPaths?: string;
 }) => invoke<BatchPublishResult[]>("batch_publish", params);
 
 // ---------- 日志与平台 ----------
@@ -192,6 +258,29 @@ export const recentLogs = (limit?: number) =>
   invoke<EventLog[]>("recent_logs", { limit });
 
 export const listPlatforms = () => invoke<PlatformInfo[]>("list_platforms");
+
+// ---------- 平台 API 令牌（按账号存储） ----------
+
+/**
+ * 保存并校验平台 API 令牌（仅令牌型平台）
+ *
+ * 后端会先调用 `verify_token` 校验令牌有效性，失败时抛出可直接展示的错误，
+ * 因此调用方必须把错误信息显示给用户。
+ *
+ * Rust 参数为 `account_id` / `token`，按 Tauri 2 的 camelCase 规则，JS 键为
+ * `accountId` / `token`。
+ */
+export const savePlatformToken = (accountId: string, token: string) =>
+  invoke<void>("save_platform_token", { accountId, token });
+
+/**
+ * 查询账号是否已配置 API 令牌
+ *
+ * 后端只检查密文列是否存在，不解密、不触发系统钥匙串。
+ * 账号不存在时会抛错（而不是返回 false），调用方需自行处理。
+ */
+export const apiTokenConfigured = (accountId: string) =>
+  invoke<boolean>("api_token_configured", { accountId });
 
 // ---------- 短信配置 ----------
 
