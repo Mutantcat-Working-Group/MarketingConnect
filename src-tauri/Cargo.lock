@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "marketing-connect"
-version = "1.0.20261112"
+version = "1.0.20261113"
 dependencies = [
  "aes-gcm",
  "anyhow",

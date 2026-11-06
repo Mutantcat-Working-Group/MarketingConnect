@@ -107,6 +107,15 @@ const PROBE: &str = r#"(() => {
     };
     const text = el => (el.innerText || el.textContent || '').trim();
     const controls = [...document.querySelectorAll('a,button,[role="button"],input[type="submit"]')].filter(visible);
+    // 抖音、小红书的登录/退出控件是普通 div/span（没有 role="button"），
+    // 只查语义化标签会漏判，导致「页面还显示登录 UI」这道防误判保护失效。
+    // 这里把「文本精确匹配候选词 + cursor:pointer」的元素也算作控件；
+    // 先做便宜的文本预筛，再算可见性与 cursor，避免在大页面上全量遍历。
+    const candidate = /^(登录|登陆|立即登录|立即登陆|扫码登录|扫码登陆|短信登录|密码登录|获取验证码|发送验证码|退出登录|退出登陆|退出账号|退出帐号|登出|Log ?in|Sign ?in|Log ?out|Sign ?out)$/i;
+    controls.push(...[...document.querySelectorAll('div,span')].filter(el => {
+        if (!candidate.test(text(el))) return false;
+        return visible(el) && getComputedStyle(el).cursor === 'pointer';
+    }));
     base.login = [...document.querySelectorAll('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete="current-password"]')].some(visible)
         || controls.some(el => /^(登录|登陆|立即登录|立即登陆|扫码登录|扫码登陆|短信登录|密码登录|获取验证码|发送验证码|Log in|Sign in)$/i.test(text(el) || el.value || ''));
     base.logout = controls.some(el => /^(退出登录|退出登陆|退出账号|退出帐号|登出|Log out|Logout|Sign out)$/i.test(text(el)));

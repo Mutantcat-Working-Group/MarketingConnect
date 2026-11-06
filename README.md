@@ -74,17 +74,22 @@
 - 平台要求短信验证码或扫码重新验证时，仍需要人工完成，无法永久免登录。
 - MCP 访问令牌保存在本地 SQLite 配置行中（未额外加密），服务仅监听 127.0.0.1。
 - 内置引擎 Obscura 的 `Network.requestWillBeSent` / `Network.responseReceived` 事件缺少 CDP 规范要求的必填字段（`initialPriority`、`referrerPolicy`、`redirectHasExtraInfo`、`charset`、`connectionReused`、`connectionId`、`encodedDataLength`、`securityState`、`hasExtraInfo`）。客户端驱动库对这类「已知方法 + 字段不符」不容错，直接连接会导致会话无法打开，因此应用在本机回环上自建 CDP 中继（`src-tauri/src/obscura/relay.rs`）补齐缺失字段后再转发；字段齐全时原样透传，等上游修复后无需改动。排查同类问题可用 `cargo run --example cdp_patch_probe -- <消息转储>` 重新探测缺哪些字段，转储通过环境变量 `MC_CDP_DUMP=<路径>` 打开（文件含 CDP 原始流量，排查后请删除）。
+- **引擎默认不加载任何字体**，不指定字体目录时页面所有文字都会渲染成方块（中文尤其明显）。应用已按平台传入系统字体目录（macOS `/System/Library/Fonts`、`/Library/Fonts`、`~/Library/Fonts`；Windows `%SystemRoot%\Fonts` 等；Linux `/usr/share/fonts` 等），可用环境变量 `MC_FONT_DIRS`（`:` 或 `;` 分隔）追加自定义目录。字体为懒加载，实测对启动耗时无影响。另注：Obscura 的**表单控件（`<input>`/`<select>`）文字绘制不走加载的字体**，其内容与占位提示仍会显示为方块（`textarea`、`contenteditable` 正常），这是引擎自身缺陷，应用侧无法修。
+- **Obscura 无法完成带风控的平台的登录**。实测抖音登录页的 `/passport/web/challenge/` 在 Obscura 里被服务端判为「参数错误」，登录 SDK 随即中止二维码状态轮询（真 Chromium 90 秒轮询 76 次，Obscura 仅 2 次），手机端显示登录成功而网页端永远收不到。微信、小红书等使用同类风控。可用环境变量 `MC_ENGINE_CMD` 把引擎换成真正的 Chromium 验证（模板支持 `{port}`、`{proxy}` 占位符，含空格的路径用引号），例如：
+  `MC_ENGINE_CMD='"/path/to/Google Chrome for Testing" --headless=new --remote-debugging-port={port} --user-data-dir=/tmp/mc-chrome'`
+  换用 Chromium 后，中继还会规范化两类新版 Chromium 与驱动库版本差导致的事件（`Network.requestWillBeSentExtraInfo` 的新 `clientSecurityState`、`Page.frameRequestedNavigation` 的新 `reason` 取值），这两类事件在抖音/小红书/公众号/CSDN 上都会出现，不处理会让 CDP 连接直接断开。
 - 页面脚本自行跳转的瞬间，引擎会重建执行上下文，可能出现一次「上下文失效」错误；页面求值已内置自动重试（`src-tauri/src/obscura/eval.rs`），只对该类错误重试，不掩盖真实脚本异常。
+- 登录页的「还在显示登录 UI」判定最早只识别语义化控件（`a`/`button`/`[role=button]`），而抖音、小红书的登录控件是普通 `div`，导致该保护失效；现已把「文本精确匹配 + `cursor: pointer`」的元素也算作控件。
 
 ### 三、安装与下载
 
 从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包（每个平台提供两种架构，文件名里带架构后缀）：
 
-- macOS Apple Silicon（M 系列）：`MarketingConnect_1.0.20261112_aarch64.dmg`
-- macOS Intel（x64）：`MarketingConnect_1.0.20261112_x64.dmg`
-- Windows x64：`MarketingConnect_1.0.20261112_x64-setup.exe`
-- Linux x64：`MarketingConnect_1.0.20261112_amd64.AppImage`
-- Linux arm64：`MarketingConnect_1.0.20261112_aarch64.AppImage`
+- macOS Apple Silicon（M 系列）：`MarketingConnect_1.0.20261113_aarch64.dmg`
+- macOS Intel（x64）：`MarketingConnect_1.0.20261113_x64.dmg`
+- Windows x64：`MarketingConnect_1.0.20261113_x64-setup.exe`
+- Linux x64：`MarketingConnect_1.0.20261113_amd64.AppImage`
+- Linux arm64：`MarketingConnect_1.0.20261113_aarch64.AppImage`
 
 > Windows 目前只提供 x64 包：内置浏览器引擎 Obscura 上游尚未发布 Windows arm64 二进制，缺少它会导致登录/发布功能不可用，因此没有发布无法工作的 arm64 安装包。Windows on ARM 上可运行 x64 包（系统自带 x64 兼容层）。
 

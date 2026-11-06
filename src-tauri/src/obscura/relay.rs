@@ -67,13 +67,32 @@ impl CdpRelay {
     }
 }
 
+/// 解析引擎的 CDP WebSocket 地址。
+///
+/// obscura 固定暴露 `/devtools/browser`，而真正的 Chromium 需要在路径里带上
+/// 启动时生成的 UUID（只能从 `/json/version` 拿到）。这里优先问
+/// `/json/version`，失败时回退到 obscura 的固定路径。
+async fn upstream_ws_url(engine_port: u16) -> String {
+    let version_url = format!("http://127.0.0.1:{}/json/version", engine_port);
+    if let Ok(response) = reqwest::get(&version_url).await {
+        if let Ok(body) = response.json::<serde_json::Value>().await {
+            if let Some(url) = body.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) {
+                if !url.is_empty() {
+                    return url.to_string();
+                }
+            }
+        }
+    }
+    format!("ws://127.0.0.1:{}/devtools/browser", engine_port)
+}
+
 /// 单个客户端连接的中继任务
 async fn relay(client: TcpStream, engine_port: u16) -> Result<()> {
     let client_ws = tokio_tungstenite::accept_async(client)
         .await
         .context("CDP 中继握手失败")?;
 
-    let upstream_url = format!("ws://127.0.0.1:{}/devtools/browser", engine_port);
+    let upstream_url = upstream_ws_url(engine_port).await;
     let (upstream_ws, _) = tokio_tungstenite::connect_async(upstream_url.as_str())
         .await
         .context("CDP 中继连接引擎失败")?;
@@ -130,6 +149,10 @@ pub fn patch_event(text: &str) -> Option<String> {
     let changed = match method {
         "Network.requestWillBeSent" => patch_request_will_be_sent(&mut value),
         "Network.responseReceived" => patch_response_received(&mut value),
+        // 以下是新版 Chromium 与 chromiumoxide 0.7 的 CDP 版本差，
+        // 不改会让整个 CDP 连接因反序列化失败而断开。
+        "Network.requestWillBeSentExtraInfo" => patch_request_will_be_sent_extra_info(&mut value),
+        "Page.frameRequestedNavigation" => patch_frame_requested_navigation(&mut value),
         _ => false,
     };
     if !changed {
@@ -168,6 +191,43 @@ fn patch_response_received(value: &mut Value) -> bool {
         }
     }
     changed
+}
+
+/// 新版 Chromium 的 `clientSecurityState` 用 `initiatorIPAddressSpace: "Loopback"`
+/// 和改名后的 `localNetworkAccessRequestPolicy`，chromiumoxide 0.7 的
+/// `IpAddressSpace` 没有 `Loopback`，且仍要求 `privateNetworkRequestPolicy`，
+/// 于是整个事件解析失败。该字段在 chromiumoxide 事件结构里是 `Option`，
+/// 直接摘掉即可（本应用与 chromiumoxide 都不读它）。
+fn patch_request_will_be_sent_extra_info(value: &mut Value) -> bool {
+    let Some(params) = value.get_mut("params").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    params.remove("clientSecurityState").is_some()
+}
+
+/// chromiumoxide 0.7 的 `ClientNavigationReason` 只有 8 个旧取值，
+/// 新版 Chromium 会发 `initialFrameNavigation` 等新原因。`reason` 是必填枚举，
+/// 缺失或无法识别都会让事件解析失败，因此把未知取值归一到 `scriptInitiated`。
+fn patch_frame_requested_navigation(value: &mut Value) -> bool {
+    const KNOWN: [&str; 8] = [
+        "formSubmissionGet",
+        "formSubmissionPost",
+        "httpHeaderRefresh",
+        "scriptInitiated",
+        "metaTagRefresh",
+        "pageBlockInterstitial",
+        "reload",
+        "anchorClick",
+    ];
+    let Some(params) = value.get_mut("params").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    let current = params.get("reason").and_then(Value::as_str);
+    if current.is_some_and(|reason| KNOWN.contains(&reason)) {
+        return false;
+    }
+    params.insert("reason".to_string(), json!("scriptInitiated"));
+    true
 }
 
 /// 仅在字段缺失时写入；已存在则不动（引擎修好后自动透传）
@@ -272,6 +332,63 @@ mod tests {
             }),
         );
         assert!(patch_event(&raw).is_none(), "字段齐全时不应改写");
+    }
+
+    #[test]
+    fn strips_new_client_security_state_shape() {
+        // Chrome 151 的形状：IpAddressSpace 多了 Loopback，
+        // 且 privateNetworkRequestPolicy 已改名为 localNetworkAccessRequestPolicy
+        let raw = envelope(
+            "Network.requestWillBeSentExtraInfo",
+            json!({
+                "requestId": "r1",
+                "associatedCookies": [],
+                "headers": {":method": "GET"},
+                "connectTiming": {"requestTime": 1.5},
+                "clientSecurityState": {
+                    "initiatorIsSecureContext": true,
+                    "initiatorIPAddressSpace": "Loopback",
+                    "localNetworkAccessRequestPolicy": "PermissionBlock"
+                },
+                "siteHasCookieInOtherPartition": false
+            }),
+        );
+        let patched = patch_event(&raw).expect("应当摘掉 clientSecurityState");
+        let value: Value = serde_json::from_str(&patched).unwrap();
+        assert!(value["params"].get("clientSecurityState").is_none());
+        // 其余字段必须原样保留
+        assert_eq!(value["params"]["requestId"], json!("r1"));
+        assert_eq!(value["params"]["connectTiming"]["requestTime"], json!(1.5));
+        assert_eq!(value["params"]["siteHasCookieInOtherPartition"], json!(false));
+    }
+
+    #[test]
+    fn normalizes_unknown_navigation_reason() {
+        let raw = envelope(
+            "Page.frameRequestedNavigation",
+            json!({
+                "frameId": "F1",
+                "reason": "initialFrameNavigation",
+                "url": "https://a.test/",
+                "disposition": "currentTab"
+            }),
+        );
+        let patched = patch_event(&raw).expect("未知 reason 应当被归一");
+        let value: Value = serde_json::from_str(&patched).unwrap();
+        assert_eq!(value["params"]["reason"], json!("scriptInitiated"));
+        // 未知取值归一后必须是 chromiumoxide 认识的枚举值
+        assert_eq!(value["params"]["url"], json!("https://a.test/"));
+        assert_eq!(value["params"]["disposition"], json!("currentTab"));
+    }
+
+    #[test]
+    fn keeps_known_navigation_reason() {
+        let raw = envelope(
+            "Page.frameRequestedNavigation",
+            json!({"frameId": "F1", "reason": "anchorClick", "url": "https://a.test/",
+                   "disposition": "currentTab"}),
+        );
+        assert!(patch_event(&raw).is_none(), "已知 reason 不应改写");
     }
 
     #[test]
