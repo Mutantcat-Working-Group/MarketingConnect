@@ -59,10 +59,14 @@ impl PlatformAdapter for CustomPlatformAdapter {
         &self.config.creator_url
     }
 
-    // 有发布页与内容选择器即视为可发文本，媒体能力取决于是否配置了选择器
+    // 有发布页与内容选择器即视为可发文本，媒体能力取决于是否配置了选择器。
+    //
+    // `publish` 必须绑定到「是否配置了提交按钮选择器」：没有提交选择器时
+    // `publish()` 只能填充内容、永远无法真正提交（见下方 publish 的显式报错）。
+    // 若这里仍返回 true，UI 会宣称平台可自动发布，任务还会被标成「发布成功」。
     fn capabilities(&self) -> super::Capabilities {
         super::Capabilities {
-            publish: true,
+            publish: self.config.submit_selector.is_some(),
             text: self.config.content_selector.is_some(),
             images: false,
             video: false,
@@ -93,14 +97,25 @@ impl PlatformAdapter for CustomPlatformAdapter {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         // 2. 填充标题（配置了选择器且内容有标题时）
-        if let (Some(sel), Some(title)) = (&self.config.title_selector, &content.title) {
-            if !title.is_empty() {
-                let el = page
-                    .find_element(sel.as_str())
-                    .await
-                    .context("找不到标题输入框")?;
-                el.click().await.context("点击标题输入框失败")?;
-                el.type_str(title).await.context("填写标题失败")?;
+        if let Some(title) = content.title.as_deref().filter(|t| !t.is_empty()) {
+            match &self.config.title_selector {
+                Some(sel) => {
+                    let el = page
+                        .find_element(sel.as_str())
+                        .await
+                        .context("找不到标题输入框")?;
+                    el.click().await.context("点击标题输入框失败")?;
+                    el.type_str(title).await.context("填写标题失败")?;
+                }
+                // 用户填了标题但平台没配置标题选择器：不能静默丢弃，否则用户
+                // 会以为标题发出去了，实际只发了正文。
+                None => {
+                    tracing::warn!(
+                        "自定义平台「{}」未配置标题选择器，标题「{}」将被忽略",
+                        self.config.name,
+                        title
+                    );
+                }
             }
         }
 
@@ -116,14 +131,19 @@ impl PlatformAdapter for CustomPlatformAdapter {
                 .context("填写内容失败")?;
         }
 
-        // 4. 提交（配置了选择器时）
-        if let Some(sel) = &self.config.submit_selector {
-            let el = page
-                .find_element(sel.as_str())
-                .await
-                .context("找不到提交按钮")?;
-            el.click().await.context("点击提交按钮失败")?;
-        }
+        // 4. 提交：没有提交选择器时必须显式报错，绝不能填完内容就返回 Ok，
+        //    否则调度器会把「只填了表单、从未提交」当成发布成功。
+        let Some(sel) = self.config.submit_selector.as_deref() else {
+            anyhow::bail!(
+                "自定义平台「{}」未配置提交按钮选择器，无法自动提交；请补全提交选择器，或手动打开会话发布",
+                self.config.name
+            );
+        };
+        let el = page
+            .find_element(sel)
+            .await
+            .context("找不到提交按钮")?;
+        el.click().await.context("点击提交按钮失败")?;
 
         Ok(())
     }
@@ -134,5 +154,61 @@ impl PlatformAdapter for CustomPlatformAdapter {
             self.creator_url(),
             self.config.logged_in_pattern.as_deref(),
         ).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn adapter(submit_selector: Option<&str>) -> CustomPlatformAdapter {
+        CustomPlatformAdapter::new(CustomPlatform {
+            id: "my-platform".into(),
+            name: "我的平台".into(),
+            creator_url: "https://example.com/home".into(),
+            publish_url: "https://example.com/publish".into(),
+            title_selector: Some("#title".into()),
+            content_selector: Some(".editor".into()),
+            submit_selector: submit_selector.map(String::from),
+            logged_in_pattern: None,
+        })
+    }
+
+    #[test]
+    fn publish_capability_requires_submit_selector() {
+        // 没有提交按钮选择器时 publish() 无法真正提交（只会 bail!），
+        // 因此能力矩阵必须如实声明 publish: false，否则会「假成功」。
+        let without_submit = adapter(None);
+        assert!(
+            !without_submit.capabilities().publish,
+            "未配置提交选择器时不得声明可自动发布"
+        );
+
+        // 配了提交选择器才允许声明可发布。
+        let with_submit = adapter(Some("button[type=submit]"));
+        assert!(with_submit.capabilities().publish);
+        assert!(with_submit.capabilities().text);
+    }
+
+    #[test]
+    fn content_selector_still_drives_text_capability() {
+        // text 能力仍绑定内容选择器；与 publish 是两个独立维度。
+        let mut config = CustomPlatform {
+            id: "my-platform".into(),
+            name: "我的平台".into(),
+            creator_url: "https://example.com/home".into(),
+            publish_url: "https://example.com/publish".into(),
+            title_selector: None,
+            content_selector: None,
+            submit_selector: Some("button[type=submit]".into()),
+            logged_in_pattern: None,
+        };
+        let caps = CustomPlatformAdapter::new(config.clone()).capabilities();
+        assert!(caps.publish, "有提交选择器即可自动发布");
+        assert!(!caps.text, "没有内容选择器则不能发文本");
+
+        config.content_selector = Some(".editor".into());
+        let caps = CustomPlatformAdapter::new(config).capabilities();
+        assert!(caps.text);
     }
 }
