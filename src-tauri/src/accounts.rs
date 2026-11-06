@@ -118,8 +118,11 @@ pub async fn close_account_session(
 
 /// 账号会话检测（掉号检测）
 ///
-/// 通过平台适配器的 check_session 判断会话是否有效，
-/// 并更新账号状态；掉号时发送系统通知。
+/// - 令牌型平台：用 `db.get_api_token` 取令牌 → `verify_token` 判定，**不打开
+///   浏览器会话**；未配置令牌返回错误但**不标记掉号**（那是没配置，不是掉号）。
+/// - 浏览器族：打开会话后用适配器的 `check_session` 页面探测。
+///
+/// 检测结果会更新账号状态；确认掉号时发送系统通知（与短信提醒）。
 #[tauri::command]
 pub async fn check_account_session(
     app: AppHandle,
@@ -130,30 +133,44 @@ pub async fn check_account_session(
     use tauri_plugin_notification::NotificationExt;
 
     let account = find_account(&db, &account_id)?;
+    let adapter = crate::platforms::find_adapter(&account.platform, Some(&db))
+        .ok_or_else(|| format!("不支持的平台: {}", account.platform))?;
 
-    // 确保会话已打开
-    sessions
-        .open(&app, &db, &account)
-        .await
-        .map_err(|e| e.to_string())?;
+    let valid = if adapter.token_hint().is_some() {
+        // 令牌型平台没有浏览器会话：绝不打开会话，也绝不用 check_session
+        // 的页面探测结果当掉号依据（那会把已配置令牌的账号误判为掉号）。
+        match crate::platforms::check_token_session(&db, adapter.as_ref(), &account_id).await {
+            Ok(crate::platforms::TokenSession::Valid) => true,
+            Ok(crate::platforms::TokenSession::Invalid(reason)) => {
+                tracing::warn!("账号 {} 令牌校验失败: {}", account.name, reason);
+                false
+            }
+            Ok(crate::platforms::TokenSession::NotConfigured) => {
+                tracing::warn!("账号 {} 为令牌型平台但未配置 API 令牌", account.name);
+                // 不更新状态、不告警：引导用户去配置令牌即可。
+                return Err("该账号尚未配置 API 令牌，请在账号设置中粘贴".into());
+            }
+            Err(e) => return Err(format!("读取 API 令牌失败: {}", e)),
+        }
+    } else {
+        // 浏览器族：确保会话已打开再做页面探测。
+        sessions
+            .open(&app, &db, &account)
+            .await
+            .map_err(|e| e.to_string())?;
 
-    let page = sessions
-        .get_page(&account_id)
-        .ok_or("会话打开失败")?;
+        let page = sessions
+            .get_page(&account_id)
+            .ok_or("会话打开失败")?;
 
-    if sessions.is_login_active(&account_id) {
-        return Err("正在交互登录，请在登录面板点击确认登录并保存".into());
-    }
+        if sessions.is_login_active(&account_id) {
+            return Err("正在交互登录，请在登录面板点击确认登录并保存".into());
+        }
 
-    // 调用平台适配器检测会话
-    let valid = match crate::platforms::find_adapter(&account.platform, Some(&db)) {
-        Some(adapter) => adapter
+        adapter
             .check_session(&page)
             .await
-            .map_err(|e| e.to_string())?,
-        None => {
-            return Err(format!("不支持的平台: {}", account.platform));
-        }
+            .map_err(|e| e.to_string())?
     };
 
     // 更新账号状态
@@ -424,7 +441,34 @@ pub async fn batch_publish(
             })
         };
 
-        // 4. 令牌型平台：取令牌 → 能力校验 → publish_with_token。
+        // 发布前能力校验：在打开任何浏览器会话之前完成（令牌分支与浏览器分支
+        // 共用）。这样 publish: false 的平台（抖音 / 公众号）直接判失败，不会先
+        // 启动一个注定失败的浏览器实例。
+        if let Err(e) = adapter.capabilities().validate(&publish_content) {
+            let reason = format!("内容超出平台能力: {}", e);
+            let _ = db.log_event(Some(account_id), "error", "batch_publish", Some(&reason));
+            results.push(make_result(false, Some(reason)));
+            continue;
+        }
+
+        // 成功 / 失败收尾：令牌分支与浏览器分支共用，消除两份「log_event +
+        // results.push」的漂移风险。闭包把 results 作为参数传入（而不是捕获），
+        // 因此两个闭包可以同时存在；结果 JSON 仍由 make_result 统一构造。
+        let finish_success = |results: &mut Vec<serde_json::Value>| {
+            let _ = db.log_event(Some(account_id), "info", "batch_publish", Some("批量发布成功"));
+            results.push(make_result(true, None));
+        };
+        let finish_failure = |results: &mut Vec<serde_json::Value>, reason: String| {
+            let _ = db.log_event(
+                Some(account_id),
+                "error",
+                "batch_publish",
+                Some(&format!("批量发布失败: {}", reason)),
+            );
+            results.push(make_result(false, Some(reason)));
+        };
+
+        // 4. 令牌型平台：取令牌 → publish_with_token。
         //    全程不调用 sessions.open / get_page，不依赖浏览器引擎。
         //    该函数逐账号收集结果，因此这里不用 `?`（anyhow::Error 也不能
         //    直接转成 String）中断整批，失败同样写进该账号的结果 JSON。
@@ -447,34 +491,9 @@ pub async fn batch_publish(
                 }
             };
 
-            // 发布前能力校验：内容超出平台能力时直接判定该账号失败，
-            // 不调用 adapter.publish_with_token，让错误在真正发布前暴露。
-            if let Err(e) = adapter.capabilities().validate(&publish_content) {
-                let reason = format!("内容超出平台能力: {}", e);
-                let _ = db.log_event(Some(account_id), "error", "batch_publish", Some(&reason));
-                results.push(make_result(false, Some(reason)));
-                continue;
-            }
-
             match adapter.publish_with_token(&token, &publish_content).await {
-                Ok(()) => {
-                    let _ = db.log_event(
-                        Some(account_id),
-                        "info",
-                        "batch_publish",
-                        Some("批量发布成功"),
-                    );
-                    results.push(make_result(true, None));
-                }
-                Err(e) => {
-                    let _ = db.log_event(
-                        Some(account_id),
-                        "error",
-                        "batch_publish",
-                        Some(&format!("批量发布失败: {}", e)),
-                    );
-                    results.push(make_result(false, Some(e.to_string())));
-                }
+                Ok(()) => finish_success(&mut results),
+                Err(e) => finish_failure(&mut results, e.to_string()),
             }
             continue;
         }
@@ -506,34 +525,9 @@ pub async fn batch_publish(
             }
         };
 
-        // 发布前能力校验：内容超出平台能力时直接判定该账号失败，
-        // 不调用 adapter.publish，让错误在真正发布前暴露。
-        if let Err(e) = adapter.capabilities().validate(&publish_content) {
-            let reason = format!("内容超出平台能力: {}", e);
-            let _ = db.log_event(Some(account_id), "error", "batch_publish", Some(&reason));
-            results.push(make_result(false, Some(reason)));
-            continue;
-        }
-
         match adapter.publish(&page, &publish_content).await {
-            Ok(()) => {
-                let _ = db.log_event(
-                    Some(account_id),
-                    "info",
-                    "batch_publish",
-                    Some("批量发布成功"),
-                );
-                results.push(make_result(true, None));
-            }
-            Err(e) => {
-                let _ = db.log_event(
-                    Some(account_id),
-                    "error",
-                    "batch_publish",
-                    Some(&format!("批量发布失败: {}", e)),
-                );
-                results.push(make_result(false, Some(e.to_string())));
-            }
+            Ok(()) => finish_success(&mut results),
+            Err(e) => finish_failure(&mut results, e.to_string()),
         }
     }
 
