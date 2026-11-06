@@ -1,0 +1,83 @@
+name: CI
+
+# 只做「编译 + 单测 + 前端类型检查/构建」，**不含任何发布动作**。
+#
+# 为什么不复用 build.yml：build.yml 的 prepare 步骤会用
+# `gh release create "${{ github.ref_name }}"` 建 release，且 tauri-action
+# 也带 `tagName: ${{ github.ref_name }}`（它自己也会创建 release）。在功能
+# 分支上触发 workflow_dispatch 时 ref_name 就是分支名，会凭空产生一个以
+# 分支名命名的**公开** release（标题形如「营销通 feat/xxx」）。
+#
+# 因此这里另起一条完全独立的、无任何 release 动作的 workflow 来验证功能分支；
+# build.yml 保持原样，发版行为与产物命名完全不受影响。
+
+on:
+  push:
+    # main 由 build.yml 负责（它会出安装包并发布），这里不重复跑。
+    branches-ignore: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          # 与 build.yml 的缓存区分开，避免互相覆盖
+          key: ci-linux
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      # tauri.conf.json 的 externalBin 指向 binaries/obscura，该文件缺失时
+      # tauri-build 在**编译期**就会失败，所以跑单测之前也必须先取到 sidecar。
+      - name: Download Obscura sidecar
+        shell: bash
+        env:
+          OBSCURA_TARGET: x86_64-unknown-linux-gnu
+        run: ./scripts/download-obscura.sh
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Run unit tests
+        run: |
+          # 全量跑 lib 单测。**不要**改回逐个模块点名——点名的写法会让新增的
+          # 测试模块静默不执行（引擎解析链与平台能力矩阵就曾因此从未在 CI 跑过）。
+          #
+          # 跳过 test_encrypt_decrypt_roundtrip：它依赖系统钥匙串，在无交互的
+          # CI 环境里会阻塞等待授权。
+          #
+          # 这里不传 --target，跑宿主三元组，因此 obscura::engine 里按平台分支
+          # 的路径断言会走 Linux 分支，能得到与 macOS 不同的覆盖。
+          cargo test --manifest-path src-tauri/Cargo.toml --lib \
+            -- --skip test_encrypt_decrypt_roundtrip
+
+      - name: Build backend (Linux)
+        # 单测只编 lib；这里再整体编一次，确保 bin 与图片/配置等代码路径也能过。
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      - name: Type-check and build frontend
+        # 等价于 vue-tsc --noEmit && vite build，类型错误会在这里失败。
+        run: pnpm run build
