@@ -14,9 +14,7 @@ use chromiumoxide::Page;
 pub trait ElementOps: Send + Sync {
     async fn fill(&self, selector: &str, value: &str) -> Result<()>;
     async fn click(&self, selector: &str) -> Result<()>;
-    /// 上传文件。媒体上传要到 Task 9 的知乎适配器才接线，先落地接口；
-    /// 加 allow 以免为尚未接线的骨架引入新的编译警告（同 `Capabilities` 的处理）。
-    #[allow(dead_code)]
+    /// 上传文件。已由知乎适配器的发布流程经 `upload_any` 接线。
     async fn upload(&self, selector: &str, paths: &[String]) -> Result<()>;
 }
 
@@ -52,10 +50,6 @@ pub async fn click_any<O: ElementOps + ?Sized>(
 }
 
 /// 依次尝试候选选择器上传文件
-///
-/// 媒体上传要到 Task 9 的知乎适配器才接线，先落地接口；
-/// 加 allow 以免为尚未接线的骨架引入新的编译警告（同 `Capabilities` 的处理）。
-#[allow(dead_code)]
 pub async fn upload_any<O: ElementOps + ?Sized>(
     ops: &O,
     selectors: &[&str],
@@ -107,9 +101,7 @@ impl ElementOps for PageOps<'_> {
 /// 发送一个按键。`chromiumoxide` 的 `Page` **没有** `keyboard()`，
 /// 必须直接发 `Input.dispatchKeyEvent`；实现照 `src-tauri/src/login.rs:42-52` 的既有写法。
 ///
-/// 按键要到 Task 9 的知乎适配器（话题输入后回车）才接线，先落地接口；
-/// 加 allow 以免为尚未接线的骨架引入新的编译警告（同 `Capabilities` 的处理）。
-#[allow(dead_code)]
+/// 已由知乎适配器接线（话题输入后回车）。
 pub async fn press_key(page: &Page, key: &str) -> Result<()> {
     let code = match key {
         "Enter" => 13,

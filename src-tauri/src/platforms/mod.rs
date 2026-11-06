@@ -8,7 +8,7 @@
 //! - check_session: 会话健康检测（掉号判断）
 //!
 //! 适配器来源：
-//! - 内置适配器（抖音 / 小红书 / 公众号 / CSDN，静态注册）
+//! - 内置适配器（抖音 / 小红书 / 公众号 / CSDN / 知乎，静态注册）
 //! - 自定义平台（用户在设置中注册，存于 DB，由 CustomPlatformAdapter 驱动）
 
 use crate::db::Db;
@@ -22,11 +22,14 @@ mod douyin;
 mod wechat_mp;
 mod xiaohongshu;
 pub mod select;
+pub mod zhihu;
 pub use csdn::CsdnAdapter;
 pub use custom::{CustomPlatform, CustomPlatformAdapter};
 pub use douyin::DouyinAdapter;
-// 内核中媒体上传（upload_any）与 press_key 要到 Task 9 的知乎适配器才接线，
-// 此处先再导出；加 allow 以免为尚未接线的骨架引入新的编译警告（同 `Capabilities` 的处理）。
+// 再导出选择器内核：`click_any` / `fill_any` 已被 csdn / xiaohongshu 等适配器
+// 经 `crate::platforms::` 路径使用。`ElementOps` / `press_key` / `upload_any`
+// 本身已在 Task 9 接入知乎发布流程（知乎直接走 `super::select::` 路径），
+// 但这三个名字的再导出仍无调用方，故保留 allow 以免引入新的编译警告。
 #[allow(unused_imports)]
 pub use select::{ElementOps, click_any, fill_any, press_key, upload_any};
 pub use wechat_mp::WechatMpAdapter;
@@ -36,7 +39,8 @@ pub use xiaohongshu::XiaohongshuAdapter;
 ///
 /// 这些 ID 为内置适配器保留，自定义平台不可占用，
 /// 否则会与内置适配器重名导致查找结果不确定。
-pub const BUILTIN_PLATFORM_IDS: &[&str] = &["douyin", "xiaohongshu", "wechat_mp", "csdn"];
+pub const BUILTIN_PLATFORM_IDS: &[&str] =
+    &["douyin", "xiaohongshu", "wechat_mp", "csdn", "zhihu"];
 
 /// 判断是否为内置平台 ID
 pub fn is_builtin_platform_id(id: &str) -> bool {
@@ -168,6 +172,7 @@ pub fn all_adapters(db: Option<&Db>) -> Vec<Box<dyn PlatformAdapter>> {
         Box::new(xiaohongshu::XiaohongshuAdapter::new()),
         Box::new(wechat_mp::WechatMpAdapter::new()),
         Box::new(csdn::CsdnAdapter::new()),
+        Box::new(zhihu::ZhihuAdapter::new()),
     ];
 
     // 追加自定义平台（DB 查询失败时静默跳过）
