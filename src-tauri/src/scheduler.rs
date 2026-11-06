@@ -185,6 +185,10 @@ pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: 
         title: task.title.clone(),
         text: task.content.clone().unwrap_or_default(),
         media_paths,
+        cover_path: None,
+        topics: Vec::new(),
+        thread_segments: Vec::new(),
+        schedule_at: None,
     };
 
     // 4. 调用平台适配器发布

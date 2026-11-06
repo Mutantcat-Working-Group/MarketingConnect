@@ -59,6 +59,20 @@ impl PlatformAdapter for CustomPlatformAdapter {
         &self.config.creator_url
     }
 
+    // 有发布页与内容选择器即视为可发文本，媒体能力取决于是否配置了选择器
+    fn capabilities(&self) -> super::Capabilities {
+        super::Capabilities {
+            text: self.config.content_selector.is_some(),
+            images: false,
+            video: false,
+            multi_image: false,
+            cover: false,
+            topics: false,
+            thread: false,
+            schedule: false,
+        }
+    }
+
     async fn login(&self, page: &Page, _username: &str, _password: &str) -> Result<String> {
         // 通用平台不支持自动帐密登录：导航到创作者首页，
         // 用户通过截图辅助手动登录后保存 cookie

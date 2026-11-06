@@ -38,12 +38,73 @@ pub fn is_builtin_platform_id(id: &str) -> bool {
     BUILTIN_PLATFORM_IDS.contains(&id)
 }
 
+/// 平台支持的能力，驱动前端显示与发布前校验
+// 能力矩阵在后续任务（前端能力 UI 与发布前校验接线）才被实际调用，
+// 此处先落地类型定义；加 allow 以免为尚未接线的骨架引入新的编译警告。
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Capabilities {
+    pub text: bool,
+    pub images: bool,
+    pub video: bool,
+    pub multi_image: bool,
+    pub cover: bool,
+    pub topics: bool,
+    pub thread: bool,
+    pub schedule: bool,
+}
+
+#[allow(dead_code)]
+impl Capabilities {
+    /// 仅文本
+    pub const TEXT_ONLY: Self = Self {
+        text: true, images: false, video: false, multi_image: false,
+        cover: false, topics: false, thread: false, schedule: false,
+    };
+
+    /// 校验内容是否超出平台能力，超出则返回可直接展示给用户的原因
+    pub fn validate(&self, content: &PublishContent) -> anyhow::Result<()> {
+        if !self.text && !content.text.trim().is_empty() {
+            anyhow::bail!("该平台不支持文本发布");
+        }
+        if !content.media_paths.is_empty() {
+            if !self.images && !self.video {
+                anyhow::bail!("该平台不支持媒体文件");
+            }
+            if content.media_paths.len() > 1 && !self.multi_image {
+                anyhow::bail!("该平台不支持一次上传多个文件");
+            }
+        }
+        if content.cover_path.is_some() && !self.cover {
+            anyhow::bail!("该平台不支持设置封面");
+        }
+        if !content.topics.is_empty() && !self.topics {
+            anyhow::bail!("该平台不支持话题标签");
+        }
+        if !content.thread_segments.is_empty() && !self.thread {
+            anyhow::bail!("该平台不支持线程发布");
+        }
+        if content.schedule_at.is_some() && !self.schedule {
+            anyhow::bail!("该平台不支持平台内定时发布");
+        }
+        Ok(())
+    }
+}
+
 /// 发布内容
 #[derive(Debug, Clone)]
 pub struct PublishContent {
     pub title: Option<String>,
     pub text: String,
     pub media_paths: Vec<String>,
+    /// 封面（视频/文章头图）
+    pub cover_path: Option<String>,
+    /// 话题标签，不含 `#` 前缀
+    pub topics: Vec<String>,
+    /// 线程分段；非空时按顺序逐条发布，`text` 作为第一段
+    pub thread_segments: Vec<String>,
+    /// 平台内定时发布的绝对时间戳（毫秒）
+    pub schedule_at: Option<i64>,
 }
 
 /// 平台适配器 trait
@@ -57,6 +118,9 @@ pub trait PlatformAdapter: Send + Sync {
 
     /// 创作者平台首页 URL
     fn creator_url(&self) -> &str;
+
+    /// 平台支持的能力
+    fn capabilities(&self) -> Capabilities;
 
     /// 登录流程：使用帐密登录，返回登录后的 cookie JSON
     async fn login(&self, page: &chromiumoxide::Page, username: &str, password: &str) -> Result<String>;
@@ -127,4 +191,58 @@ pub fn find_adapter(platform_id: &str, db: Option<&Db>) -> Option<Box<dyn Platfo
     all_adapters(db)
         .into_iter()
         .find(|a| a.platform_id() == platform_id)
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_adapters_declare_text_capability() {
+        for adapter in all_adapters(None) {
+            let caps = adapter.capabilities();
+            assert!(caps.text, "{} 必须支持文本发布", adapter.platform_id());
+        }
+    }
+
+    #[test]
+    fn validate_rejects_video_when_unsupported() {
+        let caps = Capabilities::TEXT_ONLY;
+        let content = PublishContent {
+            title: None,
+            text: "正文".into(),
+            media_paths: vec!["/tmp/a.mp4".into()],
+            cover_path: None,
+            topics: Vec::new(),
+            thread_segments: Vec::new(),
+            schedule_at: None,
+        };
+        let err = caps.validate(&content).unwrap_err().to_string();
+        assert!(err.contains("不支持"), "错误信息应说明不支持，实际: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_topics_and_thread_when_unsupported() {
+        let caps = Capabilities::TEXT_ONLY;
+        let mut content = PublishContent {
+            title: None, text: "正文".into(), media_paths: Vec::new(),
+            cover_path: None, topics: vec!["话题".into()],
+            thread_segments: Vec::new(), schedule_at: None,
+        };
+        assert!(caps.validate(&content).is_err(), "话题不受支持时必须报错");
+
+        content.topics.clear();
+        content.thread_segments = vec!["第二段".into()];
+        assert!(caps.validate(&content).is_err(), "线程不受支持时必须报错");
+    }
+
+    #[test]
+    fn validate_accepts_content_within_capabilities() {
+        let caps = Capabilities::TEXT_ONLY;
+        let content = PublishContent {
+            title: Some("标题".into()), text: "正文".into(), media_paths: Vec::new(),
+            cover_path: None, topics: Vec::new(), thread_segments: Vec::new(), schedule_at: None,
+        };
+        assert!(caps.validate(&content).is_ok());
+    }
 }

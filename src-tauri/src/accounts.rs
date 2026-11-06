@@ -372,6 +372,10 @@ pub async fn batch_publish(
             title: title.clone(),
             text: content.clone(),
             media_paths: media.clone(),
+            cover_path: None,
+            topics: Vec::new(),
+            thread_segments: Vec::new(),
+            schedule_at: None,
         };
 
         let result = match crate::platforms::find_adapter(&account.platform, Some(&db)) {

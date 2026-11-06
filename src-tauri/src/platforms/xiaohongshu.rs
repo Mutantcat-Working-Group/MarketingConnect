@@ -45,6 +45,10 @@ impl PlatformAdapter for XiaohongshuAdapter {
         CREATOR_URL
     }
 
+    fn capabilities(&self) -> super::Capabilities {
+        super::Capabilities { text: true, images: true, video: true, multi_image: true, cover: true, topics: true, thread: false, schedule: false }
+    }
+
     async fn login(&self, page: &Page, _username: &str, _password: &str) -> Result<String> {
         // 小红书创作服务平台为扫码 / 手机号验证码登录：
         // 导航到首页，未登录时自动跳转登录页，用户在截图视图中操作。

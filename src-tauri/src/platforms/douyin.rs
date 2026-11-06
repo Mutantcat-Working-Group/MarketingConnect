@@ -40,6 +40,10 @@ impl PlatformAdapter for DouyinAdapter {
         "https://creator.douyin.com/creator-micro/home"
     }
 
+    fn capabilities(&self) -> super::Capabilities {
+        super::Capabilities { text: true, images: true, video: true, multi_image: true, cover: true, topics: true, thread: false, schedule: true }
+    }
+
     async fn login(&self, page: &Page, _username: &str, _password: &str) -> Result<String> {
         // 抖音创作者平台为扫码登录：导航到首页，
         // 未登录时呈现二维码，用户在截图视图中扫码完成登录。

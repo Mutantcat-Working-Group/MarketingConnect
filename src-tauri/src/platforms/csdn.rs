@@ -52,6 +52,10 @@ impl PlatformAdapter for CsdnAdapter {
         CREATOR_URL
     }
 
+    fn capabilities(&self) -> super::Capabilities {
+        super::Capabilities { text: true, images: true, video: false, multi_image: true, cover: true, topics: true, thread: false, schedule: false }
+    }
+
     async fn login(&self, page: &Page, _username: &str, _password: &str) -> Result<String> {
         page.goto(CREATOR_URL)
             .await
