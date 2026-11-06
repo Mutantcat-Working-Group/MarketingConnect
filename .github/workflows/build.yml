@@ -105,17 +105,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Run account, login, credential and MCP unit tests (Linux)
+      - name: Run unit tests (Linux)
         if: matrix.run_tests
         run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib mcp::tests
-          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib db::account_tests
-          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib credentials::tests
-          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib login::tests
-          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib platforms::auth::tests
-          # CDP 中继与求值重试：引擎事件缺字段会导致会话无法打开，必须有守护测试
-          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib obscura::relay
-          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib obscura::eval
+          # 全量跑 lib 单测。**不要**改回逐个模块点名——点名的写法会让新增的
+          # 测试模块静默不执行（引擎解析链与平台能力矩阵就曾因此从未在 CI 跑过）。
+          #
+          # 跳过 test_encrypt_decrypt_roundtrip：它依赖系统钥匙串，在无交互的 CI
+          # 环境里会阻塞等待授权。测试只在 ubuntu-22.04 上跑，因此
+          # obscura::engine 里按平台分支的候选路径断言会在这里真正被验证。
+          cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib \
+            -- --skip test_encrypt_decrypt_roundtrip
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
