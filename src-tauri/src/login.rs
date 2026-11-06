@@ -88,8 +88,13 @@ pub async fn finish_account_login(
     force: Option<bool>,
 ) -> Result<Value, String> {
     let account = db.list_accounts().map_err(|_| "读取账号失败")?.into_iter().find(|account| account.id == account_id).ok_or("账号不存在")?;
-    let page = sessions.get_page(&account_id).ok_or("请先打开登录会话")?;
     let adapter = crate::platforms::find_adapter(&account.platform, Some(&db)).ok_or("不支持的平台")?;
+    // 令牌型平台没有浏览器登录流程：前端不再渲染登录面板，这里也必须拒绝，
+    // 否则会走到 check_session 的页面探测这条永远无法成功的死路。
+    if adapter.token_hint().is_some() {
+        return Err("令牌型平台不支持浏览器登录，请在账号工作台配置 API 令牌".into());
+    }
+    let page = sessions.get_page(&account_id).ok_or("请先打开登录会话")?;
     let authenticated = adapter.check_session(&page).await.map_err(|_| "登录状态检测失败")?;
     if !authenticated {
         if force != Some(true) {

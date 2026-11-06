@@ -132,9 +132,15 @@ pub struct PublishContent {
     pub thread_segments: Vec<String>,
     /// 平台内定时发布的绝对时间戳，单位**秒**
     ///
-    /// 与数据库 `scheduled_at` 列（由 `chrono::Utc::now().timestamp()` 写入）
-    /// 保持一致，任何地方都不要换算成毫秒。若某个平台接口要求毫秒，
-    /// 在该适配器内部换算，不要改这里的单位。
+    /// 注意区分两个同名概念：
+    /// - 数据库 `PublishTask.scheduled_at`：**本应用**何时该发起发布，由
+    ///   `scheduler` 轮询判断，**不是**这个字段。
+    /// - 本字段：**要求平台在其内部**定时发布。平台不支持（`schedule: false`）
+    ///   时必须为 `None`，否则 `validate()` 会拒绝，任务会永久失败。
+    ///
+    /// 时间戳单位与数据库列（由 `chrono::Utc::now().timestamp()` 写入）一致，
+    /// 任何地方都不要换算成毫秒。若某个平台接口要求毫秒，在该适配器内部换算，
+    /// 不要改这里的单位。
     pub schedule_at: Option<i64>,
 }
 
@@ -218,6 +224,38 @@ pub fn find_adapter(platform_id: &str, db: Option<&Db>) -> Option<Box<dyn Platfo
     all_adapters(db)
         .into_iter()
         .find(|a| a.platform_id() == platform_id)
+}
+
+/// 令牌型账号的会话有效性判定结果
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenSession {
+    /// 令牌校验通过，账号在线
+    Valid,
+    /// 令牌校验失败（掉号），附带失败原因，便于日志与告警
+    Invalid(String),
+    /// 该账号尚未配置 API 令牌：**无法判定**，不是「掉号」。
+    /// 调用方不得据此标记离线或发送掉号告警。
+    NotConfigured,
+}
+
+/// 令牌型平台的会话有效性：读取账号令牌并调用 `verify_token`
+///
+/// 只应在 `adapter.token_hint().is_some()` 时调用。浏览器族平台必须继续走
+/// 页面探测（`check_session`），不要用本函数。
+///
+/// 注意：`verify_token` 会发起真实网络请求，测试中不要调用到它。
+pub async fn check_token_session(
+    db: &Db,
+    adapter: &dyn PlatformAdapter,
+    account_id: &str,
+) -> anyhow::Result<TokenSession> {
+    let Some(token) = db.get_api_token(account_id)? else {
+        return Ok(TokenSession::NotConfigured);
+    };
+    match adapter.verify_token(&token).await {
+        Ok(()) => Ok(TokenSession::Valid),
+        Err(e) => Ok(TokenSession::Invalid(e.to_string())),
+    }
 }
 
 #[cfg(test)]
@@ -335,5 +373,23 @@ mod capability_tests {
             cover_path: None, topics: Vec::new(), thread_segments: Vec::new(), schedule_at: None,
         };
         assert!(caps.validate(&content).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod token_session_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unconfigured_token_is_not_reported_as_dropped() {
+        // 账号未配置 API 令牌时必须返回 NotConfigured，而不是 Invalid：
+        // 否则没有配置令牌的 dev.to 账号会被掉号监控误判为「掉号」并触发告警。
+        // 未配置令牌会在调用 verify_token 之前返回，因此本测试不发任何网络请求。
+        let db = Db::open(std::path::Path::new(":memory:")).expect("打开内存库失败");
+        let adapter = find_adapter("devto", None).expect("devto 适配器必须存在");
+        let result = check_token_session(&db, adapter.as_ref(), "no-such-account")
+            .await
+            .expect("读取未配置令牌不应报错");
+        assert_eq!(result, TokenSession::NotConfigured);
     }
 }

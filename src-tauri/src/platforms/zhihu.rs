@@ -145,8 +145,17 @@ impl PlatformAdapter for ZhihuAdapter {
         }
         super::select::fill_any(&ops, BODY, &content.text).await?;
         for topic in &content.topics {
-            if super::select::fill_any(&ops, TOPIC, topic).await.is_ok() {
-                let _ = super::select::press_key(page, "Enter").await;
+            // 话题是发布的可选增强项，且 TOPIC 选择器未实测：填写失败只记录
+            // 警告、不让整篇文章发布失败（否则一个失效话题框会让正文也发不出去）。
+            match super::select::fill_any(&ops, TOPIC, topic).await {
+                Ok(_) => {
+                    if let Err(e) = super::select::press_key(page, "Enter").await {
+                        tracing::warn!("知乎话题「{}」填写后按回车失败，已跳过: {}", topic, e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("知乎话题「{}」填写失败，该话题已丢失: {}", topic, e);
+                }
             }
         }
         if !content.media_paths.is_empty() {

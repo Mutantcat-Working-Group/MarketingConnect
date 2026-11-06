@@ -60,20 +60,45 @@ async fn check_all_sessions(app: &AppHandle) {
             continue;
         }
 
-        let Some(page) = sessions.get_page(&account.id) else {
+        let Some(adapter) = crate::platforms::find_adapter(&account.platform, Some(&db)) else {
             continue;
         };
 
-        // 调用平台适配器检测会话
-        let valid = match crate::platforms::find_adapter(&account.platform, Some(&db)) {
-            Some(adapter) => match adapter.check_session(&page).await {
+        // 令牌型平台没有浏览器会话：会话有效性走 verify_token，绝不能拿
+        // check_session 的页面探测结果当掉号依据（dev.to 之前恒返回 false，
+        // 导致每个已登录的 dev.to 账号都会被误报掉号并发通知/短信）。
+        let valid = if adapter.token_hint().is_some() {
+            match crate::platforms::check_token_session(&db, adapter.as_ref(), &account.id).await {
+                Ok(crate::platforms::TokenSession::Valid) => true,
+                Ok(crate::platforms::TokenSession::Invalid(reason)) => {
+                    warn!("监控：账号 {} 令牌校验失败: {}", account.name, reason);
+                    false
+                }
+                // 未配置令牌是「没配置」，不是「掉号」：不标离线、不告警。
+                Ok(crate::platforms::TokenSession::NotConfigured) => {
+                    warn!(
+                        "监控：账号 {} 为令牌型平台但未配置 API 令牌，跳过掉号判定",
+                        account.name
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    warn!("监控：账号 {} 读取 API 令牌失败: {}", account.name, e);
+                    continue;
+                }
+            }
+        } else {
+            // 浏览器族：维持原有页面探测逻辑。
+            let Some(page) = sessions.get_page(&account.id) else {
+                continue;
+            };
+            match adapter.check_session(&page).await {
                 Ok(v) => v,
                 Err(e) => {
                     warn!("监控：账号 {} 检测出错: {}", account.name, e);
                     continue;
                 }
-            },
-            None => continue,
+            }
         };
 
         if !valid {

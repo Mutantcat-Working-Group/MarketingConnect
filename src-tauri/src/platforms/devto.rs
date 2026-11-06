@@ -33,22 +33,37 @@ fn normalize_tags(topics: &[String]) -> Vec<String> {
     let mut tags: Vec<String> = Vec::new();
     for topic in topics {
         // 过滤非字母数字字符时 `#` 一并被去掉，无需单独的 trim_start_matches。
-        let cleaned: String = topic
-            .trim()
+        let trimmed = topic.trim();
+        let cleaned: String = trimmed
             .chars()
             .filter(|c| c.is_ascii_alphanumeric())
             .collect();
         if cleaned.is_empty() {
+            // 让用户能感知标签被丢弃：dev.to 只接受字母数字标签，中文等会被
+            // API 拒绝，这里必须过滤，但不能静默丢弃。
+            if !trimmed.is_empty() {
+                tracing::warn!("dev.to 不支持标签「{}」：只允许字母数字，已丢弃", topic);
+            }
             continue;
+        }
+        if cleaned != trimmed {
+            tracing::warn!("dev.to 标签「{}」含非法字符，已规范化为「{}」", topic, cleaned);
         }
         // 忽略大小写去重，避免 "Rust" 与 "rust" 触发 API 的重复标签拒绝。
         if tags.iter().any(|t| t.eq_ignore_ascii_case(&cleaned)) {
+            tracing::warn!("dev.to 标签「{}」与已保留标签重复，已跳过", topic);
             continue;
         }
-        tags.push(cleaned);
         if tags.len() == MAX_TAGS {
+            // 最多 4 个是 dev.to API 的硬性限制，超出部分只能丢弃。
+            tracing::warn!(
+                "dev.to 最多支持 {} 个标签，标签「{}」及之后内容已被截断",
+                MAX_TAGS,
+                topic
+            );
             break;
         }
+        tags.push(cleaned);
     }
     tags
 }
@@ -164,8 +179,12 @@ impl PlatformAdapter for DevToAdapter {
     }
 
     async fn check_session(&self, _page: &Page) -> Result<bool> {
-        // 令牌型平台的会话有效性由 verify_token 决定，不依赖页面
-        Ok(false)
+        // 令牌型平台没有浏览器会话，页面探测无意义：会话有效性一律由
+        // `verify_token` 判定，调用方（accounts / session_monitor / login）
+        // 必须先用 `token_hint()` 分流到令牌校验。若仍有调用方走到这里，
+        // 直接报错而不是返回 `Ok(false)`——返回 false 会被当成「掉号」，
+        // 触发系统通知与短信误报。
+        anyhow::bail!("Dev.to 为令牌型平台，不支持页面会话检测，请改用 verify_token 校验 API 令牌")
     }
 }
 
