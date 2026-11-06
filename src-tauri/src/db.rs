@@ -413,6 +413,39 @@ impl Db {
         }
     }
 
+    /// 保存平台 API 令牌（加密存储）
+    ///
+    /// 列 `api_token_enc` 由 Task 7 的迁移添加（见 `migrate()`），此处不再建列。
+    pub fn save_api_token(&self, account_id: &str, token: &str) -> Result<()> {
+        let encrypted = super::crypto::encrypt(token.as_bytes())?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE accounts SET api_token_enc = ?1, updated_at = ?2 WHERE id = ?3",
+            params![encrypted, chrono::Utc::now().timestamp(), account_id],
+        )?;
+        Ok(())
+    }
+
+    /// 读取平台 API 令牌（解密），未配置时返回 None
+    pub fn get_api_token(&self, account_id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT api_token_enc FROM accounts WHERE id = ?1",
+                params![account_id],
+                |row| row.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()?
+            .flatten();
+        match blob {
+            Some(bytes) if !bytes.is_empty() => {
+                let plain = super::crypto::decrypt(&bytes)?;
+                Ok(Some(String::from_utf8(plain).context("令牌不是合法文本")?))
+            }
+            _ => Ok(None),
+        }
+    }
+
     // ---------- 发布任务 ----------
 
     /// 创建发布任务
@@ -846,5 +879,45 @@ mod account_tests {
         assert_eq!(loaded.topics.as_deref(), Some("话题A,话题B"));
         assert_eq!(loaded.thread_segments.as_deref(), Some("第一段||第二段"));
         assert_eq!(loaded.scheduled_at, Some(1_800_000_000));
+    }
+
+    // 不触碰系统钥匙串：未配置令牌时读写路径都不需要加解密，可安全进默认测试。
+    #[test]
+    fn api_token_absent_returns_none_without_keyring() {
+        let db = db();
+        let account = db.create_account(&new_account()).unwrap();
+        assert_eq!(db.get_api_token(&account.id).unwrap(), None);
+        assert_eq!(db.get_api_token("missing").unwrap(), None);
+    }
+
+    // 该测试会经由 crypto::encrypt/decrypt → 系统钥匙串（keyring），与
+    // crypto::tests::test_encrypt_decrypt_roundtrip 是同一条会阻塞等待授权的路径。
+    // 故标记 #[ignore]，CI 的 `cargo test --lib` 不会执行它（编译仍会校验签名）。
+    // 本地手动运行：cargo test --lib -- --ignored api_token_round_trips_encrypted
+    #[ignore = "依赖系统钥匙串，只在本地手动运行"]
+    #[test]
+    fn api_token_round_trips_encrypted() {
+        let db = db();
+        let account = db.create_account(&new_account()).unwrap();
+        db.save_api_token(&account.id, "secret-token-123").unwrap();
+        assert_eq!(
+            db.get_api_token(&account.id).unwrap().as_deref(),
+            Some("secret-token-123")
+        );
+
+        // 落库必须是密文
+        let raw: Vec<u8> = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT api_token_enc FROM accounts WHERE id = ?1",
+                params![account.id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            !raw.windows(16).any(|w| w == b"secret-token-123"),
+            "令牌不得以明文落库"
+        );
     }
 }

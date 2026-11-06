@@ -141,6 +141,22 @@ pub trait PlatformAdapter: Send + Sync {
 
     /// 会话检测：返回 true 表示会话有效
     async fn check_session(&self, page: &chromiumoxide::Page) -> Result<bool>;
+
+    /// 令牌型平台的凭据位数说明，用于前端提示（浏览器族返回 None）
+    ///
+    /// 默认返回 None，表示该平台走浏览器登录而非令牌登录；
+    /// 令牌族适配器覆盖它，`save_platform_token` 以此判断平台是否支持令牌。
+    fn token_hint(&self) -> Option<&str> {
+        None
+    }
+
+    /// 校验令牌是否可用（令牌型平台实现；浏览器族返回不支持）
+    ///
+    /// 默认实现直接报不支持，故抖音/小红书/公众号/CSDN/自定义平台
+    /// 都无需改动。
+    async fn verify_token(&self, _token: &str) -> Result<()> {
+        anyhow::bail!("该平台不支持令牌登录")
+    }
 }
 
 /// 获取所有已注册的平台适配器

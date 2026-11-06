@@ -217,6 +217,35 @@ pub async fn save_account_cookies(
         .map_err(|e| e.to_string())
 }
 
+/// 保存并校验平台 API 令牌（仅令牌型平台）
+///
+/// 校验通过后才加密落库：先解析适配器，再看 `token_hint()` 是否声明支持
+/// 令牌登录，最后调用 `verify_token`。浏览器族平台（抖音/小红书/公众号/
+/// CSDN/自定义平台）的默认 `token_hint()` 返回 None，因此这里会直接报错，
+/// 不会写入任何令牌。
+#[tauri::command]
+pub async fn save_platform_token(
+    db: State<'_, Db>,
+    account_id: String,
+    token: String,
+) -> Result<(), String> {
+    // `Db` 没有 `get_account`，复用 accounts.rs 里已有的 `find_account`：
+    // 它返回 Result<Account, String>，与本命令返回类型一致，可直接 `?`。
+    let account = find_account(&db, &account_id)?;
+    let adapter = crate::platforms::find_adapter(&account.platform, Some(&db))
+        .ok_or_else(|| "平台适配器不存在".to_string())?;
+    if adapter.token_hint().is_none() {
+        return Err("该平台不支持令牌登录".to_string());
+    }
+    let token = token.trim();
+    adapter
+        .verify_token(token)
+        .await
+        .map_err(|e| e.to_string())?;
+    db.save_api_token(&account_id, token).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 截取账号当前页面（返回 base64 PNG）
 ///
 /// 用于无头模式下的登录辅助：用户查看截图完成扫码/填表登录。
