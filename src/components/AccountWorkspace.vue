@@ -26,6 +26,8 @@ const sensitiveResult = ref<api.SensitiveCheckResult | null>(null);
 
 // ---------- 平台 API 令牌（仅令牌型平台显示） ----------
 const platformInfo = ref<api.PlatformInfo | null>(null);
+/** 平台信息是否已读取完成；用于避免在未知能力前闪现浏览器登录面板 */
+const platformLoaded = ref(false);
 /** 已配置 / 未配置；null 表示状态未知（未读取或不支持令牌） */
 const tokenConfigured = ref<boolean | null>(null);
 const tokenStateLoading = ref(false);
@@ -78,12 +80,16 @@ async function refreshTokenConfigured() {
 
 /** 读取当前账号所属平台的信息（能力 / 令牌支持 / 令牌提示） */
 async function loadPlatformInfo() {
+  platformLoaded.value = false;
   try {
     const list = await api.listPlatforms();
     platformInfo.value = list.find((p) => p.id === props.platform) ?? null;
   } catch {
-    // 读取失败时按「不支持令牌」处理：不显示令牌区块，也不影响发布表单
+    // 读取失败时按「不支持令牌」处理：显示浏览器登录面板（降级，不锁死用户），
+    // 也不显示令牌区块。
     platformInfo.value = null;
+  } finally {
+    platformLoaded.value = true;
   }
 }
 
@@ -131,6 +137,8 @@ async function reloadForAccount() {
   tokenInput.value = "";
   tokenMessage.value = "";
   tokenConfigured.value = null;
+  platformInfo.value = null;
+  platformLoaded.value = false;
   await Promise.all([loadTasks(), loadPlatformInfo()]);
   await refreshTokenConfigured();
 }
@@ -188,8 +196,21 @@ onMounted(reloadForAccount);
     </div>
 
     <div class="workspace-body">
-      <!-- 登录编辑与发布任务相互独立 -->
-      <LoginPanel :key="accountId" :account-id="accountId" />
+      <!-- 令牌型平台没有浏览器登录流程：不渲染登录面板，避免用户进入永远无法成功的路径 -->
+      <template v-if="platformLoaded">
+        <LoginPanel
+          v-if="!tokenSupported"
+          :key="accountId"
+          :account-id="accountId"
+        />
+        <section v-else class="panel token-login-guide">
+          <h3>使用 API 令牌发布</h3>
+          <p class="token-hint">
+            该平台通过 API 令牌发布，没有浏览器登录流程。请在下方「平台 API 令牌」中粘贴令牌；
+            未配置令牌时无法发布。
+          </p>
+        </section>
+      </template>
 
       <!-- 平台 API 令牌：仅令牌型平台显示，令牌按账号存储 -->
       <section v-if="tokenSupported" class="panel">
