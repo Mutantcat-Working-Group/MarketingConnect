@@ -12,6 +12,7 @@
 //! 会共享磁盘存储，破坏多账号隔离。会话持久化由加密的
 //! CDP cookie 导出/恢复机制负责（见 session.rs）。
 
+pub mod engine;
 mod client;
 mod eval;
 mod relay;
