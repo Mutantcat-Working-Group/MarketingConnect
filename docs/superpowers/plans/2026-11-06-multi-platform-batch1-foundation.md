@@ -352,28 +352,75 @@ cd src-tauri && cargo add zip --no-default-features --features deflate
 在 `engine.rs` 追加：
 
 ```rust
-use anyhow::{Context, Result, anyhow};
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mutantcat
+//! 浏览器引擎解析链：环境变量 → 本机 Chrome → 已下载 → 自动下载
 
-/// 引擎在应用数据目录中的安装位置
-pub fn installed_chrome_path(data_dir: &Path, version: &str) -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        data_dir.join("engine").join(version).join("chrome-mac").join("Google Chrome for Testing.app").join("Contents").join("MacOS").join("Google Chrome for Testing")
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
+
+// …（Task 1 的 first_existing / system_chrome_paths / find_system_chrome /
+//    candidate_is_browser_executable 保持原样，不重复粘贴）
+
+/// Chrome for Testing 解压后的顶层目录名
+///
+/// 官方 zip 的顶层目录就是 `chrome-<平台键>`：macOS 是 `chrome-mac-arm64`
+/// 或 `chrome-mac-x64`（**不是** `chrome-mac`），Windows 是 `chrome-win64`，
+/// Linux 是 `chrome-linux64`。这一点已用官方 zip 的中央目录条目与本地
+/// Playwright 缓存的实际布局核对过——写成 `chrome-mac` 会让解压后找不到
+/// 可执行文件，从而每次启动都重下整个引擎。
+pub fn extracted_dir_name(platform_key: &str) -> String {
+    format!("chrome-{platform_key}")
+}
+
+/// 解压目录内可执行文件的相对路径
+///
+/// 抽成纯函数是为了能在单一平台上覆盖全部平台键——各平台的 `#[cfg]`
+/// 分支在其它平台不参与编译，写错只有等到对应平台的 CI 才会暴露。
+pub fn executable_relative_path(platform_key: &str) -> Option<PathBuf> {
+    let dir = extracted_dir_name(platform_key);
+    if platform_key.starts_with("mac-") {
+        Some(
+            PathBuf::from(dir)
+                .join("Google Chrome for Testing.app")
+                .join("Contents")
+                .join("MacOS")
+                .join("Google Chrome for Testing"),
+        )
+    } else if platform_key.starts_with("win") {
+        Some(PathBuf::from(dir).join("chrome.exe"))
+    } else if platform_key.starts_with("linux") {
+        Some(PathBuf::from(dir).join("chrome"))
+    } else {
+        None
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        data_dir.join("engine").join(version).join("chrome-linux64").join("chrome")
-    }
-    #[cfg(target_os = "windows")]
-    {
-        data_dir.join("engine").join(version).join("chrome-win64").join("chrome.exe")
-    }
+}
+
+/// 指定平台键下，引擎在应用数据目录中的安装位置
+pub fn installed_chrome_path_for(
+    data_dir: &Path,
+    version: &str,
+    platform_key: &str,
+) -> Option<PathBuf> {
+    Some(
+        data_dir
+            .join("engine")
+            .join(version)
+            .join(executable_relative_path(platform_key)?),
+    )
+}
+
+/// 当前平台的引擎安装位置（平台不受支持时返回 `None`）
+pub fn installed_chrome_path(data_dir: &Path, version: &str) -> Option<PathBuf> {
+    installed_chrome_path_for(data_dir, version, chrome_for_testing_platform_key()?)
 }
 
 /// 下载并解压 Chrome for Testing；返回可执行文件路径。
 /// `version` 必须来自配置（锁定版本），不在此函数内取最新。
 pub async fn download_chrome(data_dir: &Path, url: &str, version: &str) -> Result<PathBuf> {
-    let exe = installed_chrome_path(data_dir, version);
+    let key = chrome_for_testing_platform_key().context("当前平台不支持自动获取引擎")?;
+    let exe =
+        installed_chrome_path_for(data_dir, version, key).context("无法确定引擎安装路径")?;
     if exe.is_file() {
         return Ok(exe);
     }
@@ -407,15 +454,57 @@ pub async fn download_chrome(data_dir: &Path, url: &str, version: &str) -> Resul
 }
 ```
 
-- [ ] **Step 6: 运行编译与测试**
+- [ ] **Step 6: 补平台路径的跨平台测试**
 
-Run: `cd src-tauri && cargo test --lib obscura::engine`
-Expected: PASS，7 passed（新增函数无单测，靠 Task 3 的解析链覆盖）
+追加测试（**必须**覆盖非本平台的平台键，否则 macOS 的目录名错误要到 CI 才会暴露）：
 
-- [ ] **Step 7: 提交**
+```rust
+    #[test]
+    fn macos_extract_dir_carries_the_arch() {
+        assert_eq!(extracted_dir_name("mac-arm64"), "chrome-mac-arm64");
+        assert_eq!(extracted_dir_name("mac-x64"), "chrome-mac-x64");
+    }
+
+    #[test]
+    fn resolves_executable_for_every_platform_key() {
+        // 用 iter() 而不是字符串比较，避免 Windows CI 上分隔符不同导致失败
+        let parts = |p: PathBuf| -> Vec<String> {
+            p.iter().map(|c| c.to_string_lossy().to_string()).collect()
+        };
+
+        assert_eq!(
+            parts(executable_relative_path("mac-arm64").unwrap()),
+            vec![
+                "chrome-mac-arm64", "Google Chrome for Testing.app",
+                "Contents", "MacOS", "Google Chrome for Testing"
+            ]
+        );
+        assert_eq!(parts(executable_relative_path("win64").unwrap()), vec!["chrome-win64", "chrome.exe"]);
+        assert_eq!(parts(executable_relative_path("linux64").unwrap()), vec!["chrome-linux64", "chrome"]);
+        assert_eq!(executable_relative_path("unknown-os"), None);
+    }
+
+    #[test]
+    fn installed_path_lives_under_engine_version_dir() {
+        let data = Path::new("/data");
+        let version = "157.0.8103.38";
+        let p = installed_chrome_path_for(data, version, "linux64").unwrap();
+        assert!(p.starts_with(data.join("engine").join(version)));
+        assert_eq!(p.file_name().unwrap().to_string_lossy(), "chrome");
+    }
+```
+
+- [ ] **Step 7: 用真实下载验证解压路径**
+
+单元测试无法证明 zip 的真实目录名与推导一致，必须真下载一次。已提供诊断 example：
+
+Run: `cd src-tauri && cargo run --release --example engine_fetch -- /tmp/mc-engine-fetch`
+Expected: 打印平台键、版本、地址，下载约 187 MB 后输出 `--version: Google Chrome for Testing 157.0.8103.38` 与「验证通过：下载、解压、可执行三段全部正常」
+
+- [ ] **Step 8: 提交**
 
 ```bash
-git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/src/obscura/engine.rs
+git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/src/obscura/engine.rs src-tauri/examples/engine_fetch.rs
 git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "feat: Chrome for Testing 下载解压与平台键映射（版本由配置锁定）"
 ```
 
