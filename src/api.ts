@@ -297,12 +297,22 @@ export interface SmsConfigView {
 
 export const getSmsConfig = () => invoke<SmsConfigView>("get_sms_config");
 
+/**
+ * 保存短信配置
+ *
+ * Rust 命令 `save_sms_config` 的参数是顶层参数（`access_key_id` 等），按 Tauri 2
+ * 的 camelCase 规则，JS 侧键名必须是 `accessKeyId` / `accessKeySecret` / `signName`
+ * / `templateCode` / `phoneNumbers`；传 snake_case 会在运行时直接报「缺少参数」。
+ *
+ * 注意这与 `SmsConfigView`（`get_sms_config` 的**返回值**）不同：返回值由 Rust
+ * 直接序列化为 snake_case，保持不变。
+ */
 export const saveSmsConfig = (params: {
-  access_key_id: string;
-  access_key_secret: string;
-  sign_name: string;
-  template_code: string;
-  phone_numbers: string;
+  accessKeyId: string;
+  accessKeySecret: string;
+  signName: string;
+  templateCode: string;
+  phoneNumbers: string;
 }) => invoke<void>("save_sms_config", params);
 
 export const testSms = () => invoke<string>("test_sms");
@@ -324,15 +334,26 @@ export interface CustomPlatform {
 export const listCustomPlatforms = () =>
   invoke<CustomPlatform[]>("list_custom_platforms");
 
+/**
+ * 新增自定义平台
+ *
+ * Rust 命令 `create_custom_platform` 的参数是顶层参数（`creator_url` 等），按
+ * Tauri 2 的 camelCase 规则，JS 侧键名必须是 `creatorUrl` / `publishUrl` /
+ * `titleSelector` / `contentSelector` / `submitSelector` / `loggedInPattern`；
+ * 传 snake_case 会在运行时直接报「缺少参数」。
+ *
+ * 返回的 `CustomPlatform`（`list_custom_platforms`）是 Rust 序列化结果，仍为
+ * snake_case，保持不变。
+ */
 export const createCustomPlatform = (params: {
   id: string;
   name: string;
-  creator_url: string;
-  publish_url: string;
-  title_selector?: string;
-  content_selector?: string;
-  submit_selector?: string;
-  logged_in_pattern?: string;
+  creatorUrl: string;
+  publishUrl: string;
+  titleSelector?: string;
+  contentSelector?: string;
+  submitSelector?: string;
+  loggedInPattern?: string;
 }) => invoke<void>("create_custom_platform", params);
 
 export const deleteCustomPlatform = (id: string) =>

@@ -33,12 +33,14 @@ async function save() {
   message.value = "";
   try {
     await api.saveSmsConfig({
-      access_key_id: config.value.access_key_id,
+      // 注意：键名是 camelCase（Rust 顶层参数 + Tauri 2 键名转换），
+      // 值仍来自 snake_case 的 SmsConfigView 响应。
+      accessKeyId: config.value.access_key_id,
       // 空 = 保留原密钥
-      access_key_secret: secretInput.value,
-      sign_name: config.value.sign_name,
-      template_code: config.value.template_code,
-      phone_numbers: config.value.phone_numbers,
+      accessKeySecret: secretInput.value,
+      signName: config.value.sign_name,
+      templateCode: config.value.template_code,
+      phoneNumbers: config.value.phone_numbers,
     });
     secretInput.value = "";
     messageType.value = "ok";

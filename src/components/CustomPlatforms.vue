@@ -51,12 +51,13 @@ async function save() {
     await api.createCustomPlatform({
       id: form.value.id.trim(),
       name: form.value.name.trim(),
-      creator_url: form.value.creator_url.trim(),
-      publish_url: form.value.publish_url.trim(),
-      title_selector: form.value.title_selector.trim() || undefined,
-      content_selector: form.value.content_selector.trim() || undefined,
-      submit_selector: form.value.submit_selector.trim() || undefined,
-      logged_in_pattern: form.value.logged_in_pattern.trim() || undefined,
+      // 键名必须是 camelCase（Tauri 2 会把 Rust 顶层参数转成 camelCase）。
+      creatorUrl: form.value.creator_url.trim(),
+      publishUrl: form.value.publish_url.trim(),
+      titleSelector: form.value.title_selector.trim() || undefined,
+      contentSelector: form.value.content_selector.trim() || undefined,
+      submitSelector: form.value.submit_selector.trim() || undefined,
+      loggedInPattern: form.value.logged_in_pattern.trim() || undefined,
     });
     messageType.value = "ok";
     message.value = "平台已创建";
