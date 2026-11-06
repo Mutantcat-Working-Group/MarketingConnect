@@ -2106,19 +2106,34 @@ git -c user.name="Mutantcat Dev" -c user.email="dev@mutantcat.com" commit -m "fe
 
 - [ ] **Step 1: 本地实测两个打样平台**
 
-用真 Chromium 启动应用（`MC_ENGINE_CMD` 指向 Chrome for Testing），依次验证：
+**不要**再依赖 `MC_ENGINE_CMD` 指向 Chrome——真 Chrome 已是默认引擎（解析链：`MC_ENGINE_CMD` 显式覆盖 → 本机 Chrome → 应用数据目录中已下载的 CfT → 自动下载）。直接起应用即可。
+
+依次验证：
 
 1. 知乎：打开登录会话 → 页面正常渲染中文 → 登录后 `check_session` 返回 true。
 2. Dev.to：粘贴真实 API 令牌 → 校验通过 → 发布一篇测试文章 → 确认线上可见。
 
 把每步的实际结果（成功/失败、报错原文、选择器是否需要调整）记录下来。
 
+顺带确认引擎解析链的实际行为：首次启动应下载 CfT（约 187 MB），之后启动应直接复用（日志出现「使用引擎: …（来源: Downloaded）」）。
+
 - [ ] **Step 2: 更新 README**
 
-在「已知限制」中补充：
+README 有多处已与现实不符，**必须逐条修正**（行号以当前文件为准）：
 
-- 引擎采用双轨制，本机 Chrome 优先，缺失时下载 Chrome for Testing 并锁定版本（当前 `157.0.8103.38`）。
-- 中继对驱动库无法解析的事件改为丢弃并记录警告，不再断开连接；排查用日志关键字「丢弃驱动库无法解析的事件」。
+| 现位置 | 现在写的是 | 应改为 |
+|---|---|---|
+| 「已知限制」关于 Obscura 事件缺字段那条 | 只提 Obscura 缺 `initialPriority` 等字段 | 补充两类新版 Chromium 的版本差事件：`Network.requestWillBeSentExtraInfo` 的 `clientSecurityState`、`Page.frameRequestedNavigation` 的未知 `reason`（如 `initialFrameNavigation`）。这些是在真 Chrome 157 上实测到的，与 Obscura 无关 |
+| 同一条 | 未提兜底 | 增加：中继对驱动库仍无法解析的事件**丢弃并告警**（日志关键字「丢弃无法解析的 CDP 事件」），不再让整条连接断开；响应帧永不丢弃 |
+| 「引擎默认不加载任何字体」整条 | 描述 Obscura 的字体缺陷与 `MC_FONT_DIRS` | 标注为**仅在使用 Obscura 时成立**。默认真 Chrome 原生加载系统字体，无此问题 |
+| 「Obscura 无法完成带风控平台的登录」整条 | 把「用 `MC_ENGINE_CMD` 换真 Chromium」写成变通手段 | 改为：真 Chrome 已是默认引擎，无需 `MC_ENGINE_CMD`；该变量仍可用于对照验证。说明解析链与锁定版本 `157.0.8103.38` |
+| 「技术栈」里「浏览器引擎：Obscura」 | 列 Obscura 为引擎 | 改为：浏览器引擎为 Chrome / Chrome for Testing（版本由配置锁定）；Obscura 仅在 `MC_ENGINE_CMD` 显式指定时使用 |
+| 「Windows 只提供 x64 包」的原因 | 说因 Obscura 无 Windows arm64 二进制 | 原因已不成立（CfT 有 win-arm64）。保持"仅提供 x64"的结论不变，但改成如实说明：暂不提供 Windows arm64 包。**不要**因此就去新增 arm64 包——用户已明确不需要 |
+| 引擎启动说明 | 如提到 engines 目录/字体参数 | 改为应用数据目录下 `engine/<版本>/chrome-<平台键>/`，每个代理实例有独立 `chrome-profile/<键>` |
+
+另外在「已知限制」补充：
+
+- 多实例是**按代理**分组的，每个实例用独立 Chrome profile 目录。实测同一 `--user-data-dir` 的第二个 Chrome 进程会因 `ProcessSingleton` 冲突**直接中止**，因此多代理场景必须分目录。
 - 新增平台中，浏览器族的发布页选择器无法预先验证，失败时报错会列出全部尝试过的选择器。
 
 - [ ] **Step 3: 提交并交付**
