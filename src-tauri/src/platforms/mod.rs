@@ -177,6 +177,15 @@ pub trait PlatformAdapter: Send + Sync {
     async fn verify_token(&self, _token: &str) -> Result<()> {
         anyhow::bail!("该平台不支持令牌登录")
     }
+
+    /// 通过 API 令牌发布（令牌型平台实现）。默认不支持。
+    ///
+    /// 默认实现直接报不支持，故既有适配器都无需改动；
+    /// 调用方（`scheduler::execute_publish` / `accounts::batch_publish`）
+    /// 只在 `token_hint()` 非空时才走这里，全程不打开浏览器会话。
+    async fn publish_with_token(&self, _token: &str, _content: &PublishContent) -> Result<()> {
+        anyhow::bail!("该平台不支持通过 API 令牌发布")
+    }
 }
 
 /// 获取所有已注册的平台适配器
@@ -261,6 +270,22 @@ mod capability_tests {
             assert!(!caps.topics, "{id} 未实现发布，topics 必须为 false");
             assert!(!caps.thread, "{id} 未实现发布，thread 必须为 false");
             assert!(!caps.schedule, "{id} 未实现发布，schedule 必须为 false");
+        }
+    }
+
+    #[test]
+    fn only_devto_takes_the_token_publish_branch() {
+        // 两条发布路径都是「先解析 adapter、再按 `token_hint()` 分流」：
+        // 只有令牌族平台走 `publish_with_token` 且完全不打开浏览器会话。
+        // 这里守护该分类契约，防止新增适配器时误判分流方向。
+        for adapter in all_adapters(None) {
+            let is_token_branch = adapter.token_hint().is_some();
+            assert_eq!(
+                is_token_branch,
+                adapter.platform_id() == "devto",
+                "{} 是否走令牌发布分支与预期不符",
+                adapter.platform_id()
+            );
         }
     }
 

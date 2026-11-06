@@ -23,20 +23,60 @@ impl Default for DevToAdapter {
     fn default() -> Self { Self::new() }
 }
 
-/// 构造 Dev.to 文章请求体（纯函数，便于测试）
+/// 规范化 dev.to 标签
 ///
-/// 目前只有本模块的 `#[cfg(test)]` 用例引用它；真正的发布接线在 Task 11
-/// （`publish_with_token`）中完成，非测试构建下因此是 dead code。
-/// 这里按 `Capabilities::TEXT_ONLY` / `zhihu.rs` 的 `LOGIN_*` 先例做精确抑制，
-/// 不要为了消警告而删除它。
-#[allow(dead_code)]
+/// dev.to 的 `tags` 上限为 **4 个** 且**只允许字母数字**，超限或含非法字符会被
+/// API 直接拒绝。这里统一做：去掉 `#` 前缀与非字母数字字符、去重（忽略大小写）、
+/// 截断到 4 个。中文等非 ASCII 字符会被过滤掉从而丢弃该标签。
+fn normalize_tags(topics: &[String]) -> Vec<String> {
+    const MAX_TAGS: usize = 4;
+    let mut tags: Vec<String> = Vec::new();
+    for topic in topics {
+        // 过滤非字母数字字符时 `#` 一并被去掉，无需单独的 trim_start_matches。
+        let cleaned: String = topic
+            .trim()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if cleaned.is_empty() {
+            continue;
+        }
+        // 忽略大小写去重，避免 "Rust" 与 "rust" 触发 API 的重复标签拒绝。
+        if tags.iter().any(|t| t.eq_ignore_ascii_case(&cleaned)) {
+            continue;
+        }
+        tags.push(cleaned);
+        if tags.len() == MAX_TAGS {
+            break;
+        }
+    }
+    tags
+}
+
+/// 截断平台返回的错误响应体，避免把整页 HTML 塞进用户可见的错误信息。
+fn summarize_body(body: &str) -> String {
+    let body = body.trim();
+    if body.is_empty() {
+        return "(无响应内容)".to_string();
+    }
+    const MAX_CHARS: usize = 500;
+    if body.chars().count() <= MAX_CHARS {
+        body.to_string()
+    } else {
+        format!("{}…", body.chars().take(MAX_CHARS).collect::<String>())
+    }
+}
+
+/// 构造 Dev.to 文章请求体（纯函数，便于测试）
 pub fn build_article_payload(content: &PublishContent) -> serde_json::Value {
+    let tags = normalize_tags(&content.topics);
     serde_json::json!({
         "article": {
             "title": content.title.clone().unwrap_or_default(),
             "body_markdown": content.text,
             "published": true,
-            "tags": if content.topics.is_empty() { serde_json::Value::Null } else { serde_json::json!(content.topics) },
+            // dev.to 不接受超过 4 个或含非字母数字字符的标签，已在 normalize_tags 中规范化。
+            "tags": if tags.is_empty() { serde_json::Value::Null } else { serde_json::json!(tags) },
         }
     })
 }
@@ -55,8 +95,9 @@ impl PlatformAdapter for DevToAdapter {
         Capabilities {
             publish: true,
             text: true, images: false, video: false, multi_image: false,
-            // Task 11 实现图片上传（dev.to 的 main_image 需要已托管的图片 URL，
-            // 本地路径不能直接用）后再改回 true。
+            // 封面：dev.to 的 `main_image` 需要**已托管的图片 URL**（须先调用
+            // POST /api/images 上传取得 URL），本地文件路径不能直接用。
+            // 本批次不实现，留待后续批次，故 cover 保持 false。
             cover: false,
             topics: true, thread: false, schedule: false,
         }
@@ -86,7 +127,40 @@ impl PlatformAdapter for DevToAdapter {
         if content.title.as_deref().unwrap_or("").trim().is_empty() {
             anyhow::bail!("Dev.to 必须提供标题");
         }
-        anyhow::bail!("令牌型平台发布在 Task 11 中接线（需要账号令牌）")
+        anyhow::bail!("Dev.to 请配置 API 令牌后发布（在账号设置中粘贴令牌），不支持浏览器发布")
+    }
+
+    /// 通过 API 令牌发布文章
+    ///
+    /// POST `https://dev.to/api/articles`，请求头 `api-key: <token>`，
+    /// 请求体 `{ "article": <build_article_payload> }`。非 2xx 时把响应体
+    /// 摘要带进错误信息（dev.to 会在 body 里说明具体原因）。
+    async fn publish_with_token(&self, token: &str, content: &PublishContent) -> Result<()> {
+        self.capabilities().validate(content)?;
+        if content.title.as_deref().unwrap_or("").trim().is_empty() {
+            anyhow::bail!("Dev.to 必须提供标题");
+        }
+
+        let payload = build_article_payload(content);
+        let response = reqwest::Client::new()
+            .post(format!("{API_BASE}/articles"))
+            .header("api-key", token)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .context("连接 Dev.to 失败")?;
+
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "发布到 dev.to 失败（HTTP {}）：{}",
+            status.as_u16(),
+            summarize_body(&body)
+        )
     }
 
     async fn check_session(&self, _page: &Page) -> Result<bool> {
@@ -114,7 +188,7 @@ mod tests {
     fn declares_api_capabilities() {
         let caps = DevToAdapter::new().capabilities();
         assert!(caps.publish && caps.text && caps.topics);
-        // 封面尚未实现（main_image 需已托管的图片 URL），Task 11 前必须为 false。
+        // 封面本批次未实现（main_image 需已托管的图片 URL），必须保持 false。
         assert!(!caps.cover, "Dev.to 封面未实现，不得声明 cover: true");
         assert!(!caps.schedule, "Dev.to 不支持平台内定时");
         assert!(!caps.thread);
@@ -135,6 +209,77 @@ mod tests {
         assert_eq!(payload["article"]["body_markdown"], "正文");
         assert_eq!(payload["article"]["tags"], serde_json::json!(["rust", "tauri"]));
         assert_eq!(payload["article"]["published"], true);
+    }
+
+    fn content_with(topics: Vec<String>) -> PublishContent {
+        PublishContent {
+            title: None, text: "正文".into(), media_paths: Vec::new(),
+            cover_path: None, topics, thread_segments: Vec::new(), schedule_at: None,
+        }
+    }
+
+    #[test]
+    fn normalizes_tags_to_devto_constraints() {
+        // dev.to 只接受最多 4 个、且仅含字母数字的标签；超限或含非法字符会被
+        // API 直接拒绝，故 build_article_payload 必须先规范化。
+        let tags = normalize_tags(&[
+            "#Rust".into(),        // 去掉 `#`
+            "rust".into(),         // 与前一个忽略大小写重复
+            "hello world".into(),  // 空格被过滤
+            "中文".into(),          // 非字母数字，整体丢弃
+            "a-b_c".into(),        // 连字符/下划线被过滤
+            "tauri".into(),
+            "fifth".into(),        // 第 5 个被截断
+            "".into(),
+        ]);
+        assert_eq!(tags, vec!["Rust", "helloworld", "abc", "tauri"]);
+    }
+
+    #[test]
+    fn normalizes_more_than_four_tags_to_four() {
+        let topics: Vec<String> = (0..10).map(|i| format!("tag{i}")).collect();
+        assert_eq!(normalize_tags(&topics).len(), 4);
+    }
+
+    #[test]
+    fn empty_tags_serialize_as_null() {
+        let payload = build_article_payload(&content_with(vec!["中文".into()]));
+        assert_eq!(payload["article"]["tags"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn summarize_body_truncates_multibyte_safely() {
+        let long = "错".repeat(600);
+        let summary = summarize_body(&long);
+        assert_eq!(summary.chars().count(), 501, "截断后应为 500 字符加省略号");
+        assert!(summary.ends_with('…'));
+        assert_eq!(summarize_body("   "), "(无响应内容)");
+        assert_eq!(summarize_body("  boom  "), "boom");
+    }
+
+    // 只走到请求前的本地校验分支，不会发起任何网络请求（用的是假令牌）。
+    #[tokio::test]
+    async fn publish_with_token_validates_before_any_network_call() {
+        let adapter = DevToAdapter::new();
+
+        // 缺标题：在发请求前就报错
+        let err = adapter
+            .publish_with_token("fake-token", &content_with(Vec::new()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("标题"), "实际: {err}");
+
+        // 声明了封面但 dev.to 本批次未实现（cover: false）：同样在请求前拒绝
+        let mut with_cover = content_with(Vec::new());
+        with_cover.title = Some("标题".into());
+        with_cover.cover_path = Some("/tmp/cover.png".into());
+        let err = adapter
+            .publish_with_token("fake-token", &with_cover)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("封面"), "实际: {err}");
     }
 
     #[test]

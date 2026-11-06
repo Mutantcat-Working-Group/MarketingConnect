@@ -446,6 +446,25 @@ impl Db {
         }
     }
 
+    /// 该账号是否已配置 API 令牌（不解密，避免无谓地触发系统钥匙串）
+    ///
+    /// 只查询密文列是否存在且非空，**不**调用 `crypto::decrypt`，因此不会访问
+    /// 系统钥匙串。与 `get_api_token` 的语义保持一致：空 blob 视为未配置。
+    /// 账号不存在时返回 `Ok(false)`——对调用方（前端「已配置 / 未配置」展示）
+    /// 而言与「未配置」等价，不必区分，也避免把「账号刚被删除」当成硬错误。
+    pub fn has_api_token(&self, account_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let configured: Option<i64> = conn
+            .query_row(
+                "SELECT api_token_enc IS NOT NULL AND length(api_token_enc) > 0 \
+                 FROM accounts WHERE id = ?1",
+                params![account_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(configured.unwrap_or(0) != 0)
+    }
+
     // ---------- 发布任务 ----------
 
     /// 创建发布任务
@@ -888,6 +907,41 @@ mod account_tests {
         let account = db.create_account(&new_account()).unwrap();
         assert_eq!(db.get_api_token(&account.id).unwrap(), None);
         assert_eq!(db.get_api_token("missing").unwrap(), None);
+    }
+
+    // 同样不触碰系统钥匙串：has_api_token 只判断密文列是否存在且非空，不解密。
+    #[test]
+    fn has_api_token_reports_configured_state_without_keyring() {
+        let db = db();
+        let account = db.create_account(&new_account()).unwrap();
+
+        assert!(!db.has_api_token(&account.id).unwrap(), "新账号未配置令牌");
+        assert!(
+            !db.has_api_token("missing").unwrap(),
+            "账号不存在应返回 false，而非报错"
+        );
+
+        // 直接写入一段非空密文（不经过 crypto，因此不会访问钥匙串）。
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE accounts SET api_token_enc = ?1 WHERE id = ?2",
+                params![vec![1u8, 2, 3, 4], account.id],
+            )
+            .unwrap();
+        }
+        assert!(db.has_api_token(&account.id).unwrap(), "存在非空密文即视为已配置");
+
+        // 空 blob 视为未配置，与 get_api_token 的语义保持一致。
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE accounts SET api_token_enc = ?1 WHERE id = ?2",
+                params![Vec::<u8>::new(), account.id],
+            )
+            .unwrap();
+        }
+        assert!(!db.has_api_token(&account.id).unwrap(), "空密文应视为未配置");
     }
 
     // 该测试会经由 crypto::encrypt/decrypt → 系统钥匙串（keyring），与

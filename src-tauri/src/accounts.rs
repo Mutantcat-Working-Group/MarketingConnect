@@ -498,14 +498,24 @@ pub fn recent_logs(
 }
 
 /// 获取支持的平台列表
+///
+/// 返回 `id` / `name`（向后兼容既有前端）+ 能力与令牌信息：
+/// - `tokenSupported`：`token_hint()` 非空即为令牌型平台；
+/// - `tokenHint`：令牌获取位置提示（浏览器族为 null）；
+/// - `capabilities`：平台能力矩阵（`Capabilities` 直接序列化，字段 snake_case）。
 #[tauri::command]
 pub fn list_platforms(db: State<'_, Db>) -> Result<Vec<serde_json::Value>, String> {
     Ok(crate::platforms::all_adapters(Some(&db))
         .iter()
-        .map(|a| serde_json::json!({
-            "id": a.platform_id(),
-            "name": a.display_name(),
-        }))
+        .map(|a| {
+            serde_json::json!({
+                "id": a.platform_id(),
+                "name": a.display_name(),
+                "tokenSupported": a.token_hint().is_some(),
+                "tokenHint": a.token_hint(),
+                "capabilities": a.capabilities(),
+            })
+        })
         .collect())
 }
 

@@ -147,7 +147,58 @@ pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: 
         }
     };
 
-    // 2. 获取账号会话页面（按代理自动启动实例）
+    // 2. 构造发布内容
+    //
+    // 内容只依赖任务记录、不依赖浏览器会话，因此上移到「解析适配器 / 打开会话」
+    // 之前：令牌型平台必须能在完全不打开会话的情况下发布。
+    let content = content_from_task(&task);
+
+    // 3. 先解析适配器，才能判断该平台是否需要浏览器会话
+    let adapter = match platforms::find_adapter(&account.platform, Some(&db)) {
+        Some(a) => a,
+        None => {
+            fail_task(&db, task_id, &format!("不支持的平台: {}", account.platform));
+            return;
+        }
+    };
+
+    // 成功收尾只有这一处：令牌分支与浏览器分支都调用它，避免两条路径行为不一致。
+    // （本函数返回 `()`，所以令牌分支用 `match` + `fail_task` 显式处理错误，不能用 `?`。）
+    let mark_success = || {
+        let _ = db.update_task_status(task_id, "done", Some("发布成功"));
+        let _ = db.log_event(Some(account_id), "info", "publish", Some("发布成功"));
+        info!("任务 {} 发布成功", task_id);
+    };
+
+    // 4. 令牌型平台：取令牌 → 能力校验 → publish_with_token。
+    //    全程不调用 sessions.open / get_page，不依赖浏览器引擎。
+    if adapter.token_hint().is_some() {
+        let token = match db.get_api_token(account_id) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                fail_task(&db, task_id, "该账号尚未配置 API 令牌，请在账号设置中粘贴");
+                return;
+            }
+            Err(e) => {
+                fail_task(&db, task_id, &format!("读取 API 令牌失败: {}", e));
+                return;
+            }
+        };
+
+        // 发布前能力校验：内容超出平台能力时直接判失败，不发起发布。
+        if let Err(e) = adapter.capabilities().validate(&content) {
+            fail_task(&db, task_id, &format!("内容超出平台能力: {}", e));
+            return;
+        }
+
+        match adapter.publish_with_token(&token, &content).await {
+            Ok(()) => mark_success(),
+            Err(e) => fail_task(&db, task_id, &format!("发布失败: {}", e)),
+        }
+        return;
+    }
+
+    // 5. 浏览器族：到这里才需要会话（按代理自动启动实例）
     let sessions = app.state::<SessionRegistry>();
 
     // 交互式登录期间不要抢占页面；这是暂态，保留任务等下一次调度重试，
@@ -171,7 +222,31 @@ pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: 
         }
     };
 
-    // 3. 构造发布内容
+    if sessions.is_login_active(account_id) {
+        warn!("账号 {} 登录验证中，取消本次发布（任务保留，等待下次调度）", account_id);
+        return;
+    }
+
+    // 发布前能力校验：内容超出平台能力时直接判失败，不发起发布。
+    // 该函数返回 ()，所以不能用 `?`（anyhow 的 Result 也与此处无关）。
+    if let Err(e) = adapter.capabilities().validate(&content) {
+        fail_task(&db, task_id, &format!("内容超出平台能力: {}", e));
+        return;
+    }
+
+    match adapter.publish(&page, &content).await {
+        Ok(()) => mark_success(),
+        Err(e) => {
+            fail_task(&db, task_id, &format!("发布失败: {}", e));
+        }
+    }
+}
+
+/// 从任务记录构造发布内容（纯函数，不依赖浏览器会话）
+///
+/// 令牌型与浏览器族两条发布路径共用。解析规则与 `create_publish_task` 的写入一致：
+/// 媒体以 `,` 分隔、话题以 `,` 分隔、线程分段以 `||` 分隔，`scheduled_at` 单位是秒。
+fn content_from_task(task: &crate::db::PublishTask) -> PublishContent {
     let media_paths: Vec<String> = task
         .media_paths
         .as_deref()
@@ -181,7 +256,6 @@ pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: 
         .filter(|s| !s.is_empty())
         .collect();
 
-    // 话题用 `,` 分隔、线程分段用 `||` 分隔存储，与 create_publish_task 的写入一致。
     let topics: Vec<String> = task
         .topics
         .as_deref()
@@ -201,7 +275,7 @@ pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: 
         .map(String::from)
         .collect();
 
-    let content = PublishContent {
+    PublishContent {
         title: task.title.clone(),
         text: task.content.clone().unwrap_or_default(),
         media_paths,
@@ -211,38 +285,6 @@ pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: 
         // 数据库列名是 scheduled_at，映射到 PublishContent.schedule_at。
         // 两侧单位都是**秒**，直接拷贝，**不要**乘以 1000 之类的换算。
         schedule_at: task.scheduled_at,
-    };
-
-    // 4. 调用平台适配器发布
-    let adapter = match platforms::find_adapter(&account.platform, Some(&db)) {
-        Some(a) => a,
-        None => {
-            fail_task(&db, task_id, &format!("不支持的平台: {}", account.platform));
-            return;
-        }
-    };
-
-    if sessions.is_login_active(account_id) {
-        warn!("账号 {} 登录验证中，取消本次发布（任务保留，等待下次调度）", account_id);
-        return;
-    }
-
-    // 发布前能力校验：内容超出平台能力时直接判失败，不发起发布。
-    // 该函数返回 ()，所以不能用 `?`（anyhow 的 Result 也与此处无关）。
-    if let Err(e) = adapter.capabilities().validate(&content) {
-        fail_task(&db, task_id, &format!("内容超出平台能力: {}", e));
-        return;
-    }
-
-    match adapter.publish(&page, &content).await {
-        Ok(()) => {
-            let _ = db.update_task_status(task_id, "done", Some("发布成功"));
-            let _ = db.log_event(Some(account_id), "info", "publish", Some("发布成功"));
-            info!("任务 {} 发布成功", task_id);
-        }
-        Err(e) => {
-            fail_task(&db, task_id, &format!("发布失败: {}", e));
-        }
     }
 }
 
