@@ -118,6 +118,40 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib \
             -- --skip test_encrypt_decrypt_roundtrip
 
+      - name: Pre-fetch bundler tools
+        # tauri 在打包阶段会自行下载 NSIS / linuxdeploy 等打包工具，这些下载
+        # **没有重试**：GitHub Release CDN 偶发 504 就会让整个 job 失败
+        # （本版本三次都在这一步挂掉）。这里预先把它们下载到 tauri 的缓存位置，
+        # 打包阶段发现已存在就不再联网。curl 带重试与更长超时。
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE_DIR="${TAURI_CACHE_DIR:-$HOME/.cache/tauri}"
+          mkdir -p "$CACHE_DIR"
+          case "${{ matrix.target }}" in
+            *windows*)
+              if [ ! -f "$CACHE_DIR/nsis-3.13.zip" ]; then
+                echo "下载 NSIS 打包工具"
+                curl -fL --proto '=https' --tlsv1.2 --retry 8 --retry-all-errors \
+                  --retry-delay 5 --connect-timeout 30 --max-time 900 \
+                  -o "$CACHE_DIR/nsis-3.13.zip" \
+                  https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.13/nsis-3.13.zip
+              fi
+              ;;
+            *linux*)
+              if [ ! -f "$CACHE_DIR/linuxdeploy-aarch64.AppImage" ] && [ ! -f "$CACHE_DIR/linuxdeploy-x86_64.AppImage" ]; then
+                for ARCH in aarch64 x86_64; do
+                  echo "下载 linuxdeploy ($ARCH)"
+                  curl -fL --proto '=https' --tlsv1.2 --retry 8 --retry-all-errors \
+                    --retry-delay 5 --connect-timeout 30 --max-time 900 \
+                    -o "$CACHE_DIR/linuxdeploy-$ARCH.AppImage" \
+                    "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$ARCH.AppImage" || true
+                done
+              fi
+              ;;
+          esac
+          ls -la "$CACHE_DIR" || true
+
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
         env:
