@@ -161,6 +161,16 @@ impl ObscuraManager {
                     "--no-first-run".to_string(),
                     "--no-default-browser-check".to_string(),
                     "--disable-blink-features=AutomationControlled".to_string(),
+                    // Headless Chrome 默认把页面当作「后台标签页」：渲染进程被
+                    // 降优先级后 `document.visibilityState` 恒为 "hidden"，
+                    // CSS 入场动画（animation-play-state）随之被暂停。
+                    // 抖音登录卡正是靠 `login-enter` 动画从 opacity:0 淡入，
+                    // 动画一暂停就永远停在 0——截图里只剩背景和二维码外的空白，
+                    // 用户无法扫码也无法点击任何登录控件。这三个开关关掉后台
+                    // 降级，让页面按「可见前台」渲染。
+                    "--disable-backgrounding-occluded-windows".to_string(),
+                    "--disable-background-timer-throttling".to_string(),
+                    "--disable-renderer-backgrounding".to_string(),
                     format!("--user-data-dir={}", profile.display()),
                     "--window-size=1280,860".to_string(),
                     format!("--user-agent={}", engine::chrome_user_agent(&version)),

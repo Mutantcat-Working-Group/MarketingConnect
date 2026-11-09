@@ -102,11 +102,11 @@
 
 从 [Releases](https://github.com/Mutantcat-Working-Group/MarketingConnect/releases) 下载对应平台安装包（每个平台提供两种架构，文件名里带架构后缀）：
 
-- macOS Apple Silicon（M 系列）：`MarketingConnect_1.0.20261114_aarch64.dmg`
-- macOS Intel（x64）：`MarketingConnect_1.0.20261114_x64.dmg`
-- Windows x64：`MarketingConnect_1.0.20261114_x64-setup.exe`
-- Linux x64：`MarketingConnect_1.0.20261114_amd64.AppImage`
-- Linux arm64：`MarketingConnect_1.0.20261114_aarch64.AppImage`
+- macOS Apple Silicon（M 系列）：`MarketingConnect_1.0.20261115_aarch64.dmg`
+- macOS Intel（x64）：`MarketingConnect_1.0.20261115_x64.dmg`
+- Windows x64：`MarketingConnect_1.0.20261115_x64-setup.exe`
+- Linux x64：`MarketingConnect_1.0.20261115_amd64.AppImage`
+- Linux arm64：`MarketingConnect_1.0.20261115_aarch64.AppImage`
 
 > Windows 目前**只提供 x64 包**，暂不提供 Windows arm64 包。Windows on ARM 上可运行 x64 包（系统自带 x64 兼容层）。
 

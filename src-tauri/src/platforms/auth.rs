@@ -131,8 +131,18 @@ const PROBE: &str = r#"(() => {
                 && avatar('.weui-desktop-account__thumb img,img.weui-desktop-account__thumb,.account_meta .avatar img');
             break;
         case 'creator.douyin.com':
-            base.account = identity('[class*="header"] [class*="account-name"],[class*="header"] [class*="user-name"]')
-                && avatar('[class*="header"] [class*="account-avatar"] img,[class*="header"] img[class*="avatar"],[class*="header"] [class*="user-avatar"] img');
+            // 实测（2026-11-09，真 Chrome 156，已登录账号）：
+            // 顶部导航的用户信息在 `[class*="navigation-header"]` 下，昵称元素是
+            // `.name-xxxxxx`（无稳定语义 class），头像是 `aweme/100x100/aweme-avatar/`
+            // 域名的 <img>。原有 `[class*="header"] [class*="account-name"]` 前缀
+            // 选择器在真实 DOM 上一个都匹配不到，导致已登录账号恒判为未登录。
+            // 这里改为「昵称元素」或「aweme 头像」任一成立即算登录（真实 DOM 上
+            // 昵称 class 无稳定语义，靠头像域名反而更稳）。
+            base.account = (() => {
+                const nick = identity('[class*="name-"]');
+                const dyAvatar = avatar('img[src*="aweme-avatar"],img[src*="/aweme/"]');
+                return nick || dyAvatar;
+            })();
             break;
         case 'creator.xiaohongshu.com':
             base.account = identity('.user-info .user-name,.user-info .name,.account-info .nickname')
