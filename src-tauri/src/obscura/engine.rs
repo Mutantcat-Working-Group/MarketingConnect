@@ -72,13 +72,43 @@ pub fn find_system_chrome() -> Option<PathBuf> {
     first_existing(&system_chrome_paths(), |p| p.is_file())
 }
 
+/// 从「`<二进制> --version`」的输出中取出主版本号
+///
+/// 输出形如 `Google Chrome 157.0.8103.38` / `Google Chrome for Testing
+/// 157.0.8103.38`。取不到时返回 None，由调用方回退。
+pub fn chrome_major_from_version_output(output: &str) -> Option<&str> {
+    output
+        .split_whitespace()
+        .find(|token| token.split('.').count() >= 3 && token.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .map(|token| token.split('.').next().unwrap_or(token))
+}
+
+/// 探测一个浏览器可执行文件的真实主版本号
+///
+/// 直接跑 `<二进制> --version` 取输出，而不是信任配置里的锁定版本：
+/// 引擎解析链可能选中本机 Chrome（版本随用户更新），UA 必须与之一致。
+/// 探测失败返回 None，调用方应省略 `--user-agent`，让 Chrome 用它自己的
+/// 真实 UA——**不要用锁定版本顶替**，那会造出假 UA。
+pub fn detect_major_version(executable: &Path) -> Option<String> {
+    let output = std::process::Command::new(executable)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    chrome_major_from_version_output(&text).map(str::to_string)
+}
+
 /// 真 Chrome 启动时使用的 User-Agent
 ///
 /// 无头模式默认会带上 `HeadlessChrome` 标记，是明显的自动化特征。
-/// 这里按平台与主版本号生成与之匹配的普通 UA（主版本取自锁定版本，
-/// 保证与实际内核一致）。
-pub fn chrome_user_agent(version: &str) -> String {
-    let major = version.split('.').next().unwrap_or(version);
+/// 这里按平台与主版本号生成与之匹配的普通 UA。
+///
+/// **major 必须来自实际启动的那个二进制**，不能图省事用 `LOCKED_CFT_VERSION`：
+/// 引擎解析链是「本机 Chrome 优先」，本机装的是 156 而锁定的是 157 时，
+/// 用锁定版本会造出「UA 声明 157、内核却是 156」的假 UA——对风控平台
+/// 而言这比带 HeadlessChrome 标记更可疑。实测确认过这个坑：
+/// UA 报 157.0.0.0，而 `Chrome --version` 是 156.0.8078.80。
+pub fn chrome_user_agent(major: &str) -> String {
     let platform = if cfg!(target_os = "macos") {
         "Macintosh; Intel Mac OS X 10_15_7"
     } else if cfg!(target_os = "windows") {
@@ -503,7 +533,7 @@ mod tests {
 
     #[test]
     fn user_agent_has_no_headless_marker() {
-        let ua = chrome_user_agent("157.0.8103.38");
+        let ua = chrome_user_agent("157");
         assert!(!ua.to_lowercase().contains("headless"), "UA 不得含无头标记: {ua}");
         assert!(ua.contains("Chrome/157.0.0.0"), "UA 主版本必须与引擎一致: {ua}");
         assert!(ua.starts_with("Mozilla/5.0 ("), "UA 格式必须标准: {ua}");
@@ -512,5 +542,26 @@ mod tests {
     #[test]
     fn user_agent_tolerates_malformed_version() {
         assert!(chrome_user_agent("weird").contains("Chrome/weird.0.0.0"));
+    }
+
+    #[test]
+    fn major_is_parsed_from_real_chrome_version_output() {
+        // 本机 Chrome 与 Chrome for Testing 的输出格式不同，都要能取到主版本
+        assert_eq!(chrome_major_from_version_output("Google Chrome 156.0.8078.80"), Some("156"));
+        assert_eq!(chrome_major_from_version_output("Google Chrome for Testing 157.0.8103.38"), Some("157"));
+        assert_eq!(chrome_major_from_version_output("Google Chrome 157.0.8103.38\n"), Some("157"));
+        // 取不到时不得 panic，由调用方回退
+        assert_eq!(chrome_major_from_version_output(""), None);
+        assert_eq!(chrome_major_from_version_output("no version here"), None);
+    }
+
+    #[test]
+    fn ua_never_claims_a_version_the_binary_does_not_have() {
+        // 回归：以前用 LOCKED_CFT_VERSION 拼 UA，本机 Chrome 是 156 时
+        // 会产出「Chrome/157.0.0.0」的假 UA。现在 UA 只接受实际主版本。
+        let actual = chrome_major_from_version_output("Google Chrome 156.0.8078.80").unwrap();
+        let ua = chrome_user_agent(actual);
+        assert!(ua.contains("Chrome/156.0.0.0"), "UA 主版本必须等于真实内核: {ua}");
+        assert!(!ua.contains("157"), "不得夹带未使用的锁定版本: {ua}");
     }
 }

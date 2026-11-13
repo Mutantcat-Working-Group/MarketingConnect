@@ -416,3 +416,102 @@ fn storage_restore_script(saved: &Credentials, trusted_origin: &str) -> Result<S
         }}
     }})()"#))
 }
+
+/// 打开一个**用户可见、可直接操作**的浏览器窗口
+///
+/// 场景：平台尚未实现自动发布（抖音 / 公众号），或用户就是想手动发。
+/// 用一个独立的非 headless Chrome 实例 + 独立 profile 打开账号的发布页，
+/// 用户可以直接在真实浏览器里点按、拖拽、富文本编辑——这些是截图+坐标
+/// 转发做不到的。登录态由同一份加密 cookie 恢复，因此与工作台里的
+/// headless 会话保持一致，但**两个实例的 profile 目录不同**，互不干扰。
+///
+/// 返回窗口所在实例的调试端口，便于排查与后续自动化接线。
+pub async fn open_manual_window(
+    app: &AppHandle,
+    db: &Db,
+    account: &Account,
+) -> Result<u16> {
+    let adapter = platforms::find_adapter(&account.platform, Some(db))
+        .context("不支持的平台")?;
+
+    // 令牌型平台没有浏览器登录态，手动窗口没有意义。
+    if adapter.token_hint().is_some() {
+        anyhow::bail!("该平台是令牌型平台，请在账号工作台配置 API 令牌，无需浏览器窗口");
+    }
+
+    let account_id = account.id.clone();
+    let proxy = account.proxy_url.clone();
+    let app_for_start = app.clone();
+    let port = tokio::task::spawn_blocking(move || {
+        let obscura = app_for_start.state::<ObscuraManager>();
+        obscura.get_or_start_manual(&app_for_start, &account_id, proxy.as_deref())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("启动手动窗口任务失败: {}", e))??;
+
+    // 通过中继连接（与 headless 会话同一条路径，事件字段修补仍然需要）
+    let relay_port = app
+        .state::<crate::obscura::CdpRelay>()
+        .port_for(port)
+        .await
+        .context("启动 CDP 中继失败")?;
+    let cdp = app.state::<CdpState>();
+    let ws_url = crate::obscura::ws_url(relay_port);
+    let browser = cdp
+        .get_or_connect(relay_port, &ws_url)
+        .await
+        .context("连接手动窗口失败")?;
+
+    // 恢复该账号的加密 cookie（与 headless 会话同一份凭据）
+    let credentials = db
+        .get_account_cookies(&account.id)
+        .map_err(|_| anyhow::anyhow!("读取账号凭据失败"))?
+        .and_then(|json| Credentials::parse(&json).ok());
+
+    let (context_id, page) = browser.create_context_page("about:blank").await?;
+    if let Some(saved) = &credentials {
+        let count = restore_cookies(&page, saved).await;
+        info!("手动窗口已恢复 {} 个 cookie（账号 {}）", count, account.name);
+    }
+
+    // 优先打开发布页，没有则退回创作者首页
+    let target_url = platforms::publish_page_url(adapter.as_ref());
+    let storage_script = match (&credentials, http_origin(adapter.creator_url())) {
+        (Some(saved), Some(origin))
+            if saved.storage_matches(&origin)
+                && (!saved.local_storage.is_empty() || !saved.session_storage.is_empty()) =>
+        {
+            Some(storage_restore_script(saved, &origin)?)
+        }
+        _ => None,
+    };
+    let script_id = match &storage_script {
+        Some(script) => Some(
+            page.evaluate_on_new_document(AddScriptToEvaluateOnNewDocumentParams::new(
+                script.as_str(),
+            ))
+            .await
+            .map_err(|_| anyhow::anyhow!("注册页面凭据初始化失败"))?,
+        ),
+        None => None,
+    };
+    let navigation = page.goto(target_url.clone()).await;
+    if let Some(identifier) = script_id {
+        let _ = page
+            .execute(RemoveScriptToEvaluateOnNewDocumentParams::new(identifier))
+            .await;
+    }
+    if let Err(error) = navigation {
+        let _ = browser.dispose_context(&context_id).await;
+        return Err(anyhow::anyhow!("打开发布页失败: {}", error));
+    }
+
+    // 让 Chrome 窗口真正置前（headless 之外的实例本来就是可见窗口，
+    // 这里只需要把页面带到前台）
+    let _ = page.bring_to_front().await;
+    info!(
+        "已为账号 {} 打开手动发布窗口：{}（端口 {}）",
+        account.name, target_url, port
+    );
+    Ok(port)
+}

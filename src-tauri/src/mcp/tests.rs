@@ -13,11 +13,25 @@ fn defaults_are_opt_in() {
 #[test]
 fn registry_has_unique_tools_and_schemas() {
     let definitions = tools::definitions(&McpConfig::default());
-    assert_eq!(definitions.len(), 12);
+    // 不写死数量：断言具体个数只会让每次新增工具都要改测试，
+    // 却证明不了任何东西。这里断言真正的不变量——工具集合非空、
+    // 名字唯一、schema 合法，以及关键工具确实注册了。
+    assert!(!definitions.is_empty());
     let mut names = std::collections::HashSet::new();
     for tool in definitions {
         assert!(names.insert(tool["name"].as_str().unwrap().to_owned()));
         assert_eq!(tool["inputSchema"]["type"], "object");
+    }
+    for required in [
+        "list_accounts",
+        "open_account_session",
+        "open_manual_window",
+        "check_account_session",
+        "batch_publish",
+        "start_engine",
+        "stop_engine",
+    ] {
+        assert!(names.contains(required), "缺少必需工具: {required}");
     }
 }
 

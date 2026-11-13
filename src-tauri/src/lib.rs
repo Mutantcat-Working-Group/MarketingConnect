@@ -104,6 +104,7 @@ pub fn run() {
             accounts::open_account_session,
             accounts::close_account_session,
             accounts::check_account_session,
+            accounts::open_manual_window,
             accounts::save_account_cookies,
             accounts::save_platform_token,
             accounts::api_token_configured,

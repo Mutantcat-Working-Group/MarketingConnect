@@ -184,6 +184,15 @@ pub trait PlatformAdapter: Send + Sync {
         anyhow::bail!("该平台不支持令牌登录")
     }
 
+    /// 手动发布页 URL
+    ///
+    /// 「打开手动发布窗口」会用这个地址。默认退回创作者首页：
+    /// 抖音 / 公众号没有实现自动发布，但用户在首页点两下就能到发布页，
+    /// 比给每个适配器硬编码一个可能过期的发布页地址更稳。
+    fn publish_url(&self) -> Option<&str> {
+        None
+    }
+
     /// 通过 API 令牌发布（令牌型平台实现）。默认不支持。
     ///
     /// 默认实现直接报不支持，故既有适配器都无需改动；
@@ -217,6 +226,14 @@ pub fn all_adapters(db: Option<&Db>) -> Vec<Box<dyn PlatformAdapter>> {
     }
 
     adapters
+}
+
+/// 手动发布窗口应打开的地址：优先发布页，否则创作者首页
+pub fn publish_page_url(adapter: &dyn PlatformAdapter) -> String {
+    adapter
+        .publish_url()
+        .unwrap_or_else(|| adapter.creator_url())
+        .to_string()
 }
 
 /// 按平台 ID 查找适配器

@@ -31,13 +31,48 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager}; // app.state::<Db>() 与 app.path()
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
-use tracing::info;
+use tracing::{info, warn};
 
 /// 直连实例的 key
 pub const DIRECT_KEY: &str = "direct";
 
+/// 手动发布窗口的实例 key 前缀
+///
+/// 手动发布需要一个**用户看得见、能直接点**的浏览器窗口，而 headless 实例
+/// 无法承载这种交互（截图+转发坐标的方式无法完成拖拽、下拉、富文本编辑）。
+/// 因此为每个账号另起一个**非 headless** 的 Chrome 实例，key 形如
+/// `manual:<account_id>`，与 headless 实例互不干扰。
+pub const MANUAL_KEY_PREFIX: &str = "manual:";
+
 /// 起始端口
 const BASE_PORT: u16 = 9222;
+
+/// 引擎启动选项
+///
+/// `Default` 表示现有 headless 行为：按代理分组、用 `<key>` 作为 profile 目录。
+/// **必须手写 Default 让 headless 默认为 true**，derive 的默认是 false，
+/// 会让所有既有调用点静默变成有窗口模式。
+struct LaunchOptions {
+    /// 是否以 headless 模式启动
+    headless: bool,
+    /// 覆盖 profile 目录后缀（手动窗口用 `manual:<id>`，避免与 headless 冲突）
+    profile_suffix: Option<String>,
+    /// 覆盖代理设置
+    proxy: Option<String>,
+    /// 覆盖实例 key
+    key: Option<String>,
+}
+
+impl Default for LaunchOptions {
+    fn default() -> Self {
+        Self {
+            headless: true,
+            profile_suffix: None,
+            proxy: None,
+            key: None,
+        }
+    }
+}
 
 /// 单个 Obscura 实例
 struct ObscuraInstance {
@@ -65,7 +100,62 @@ impl ObscuraManager {
     ///
     /// proxy 为 None 时使用直连实例。
     pub fn get_or_start(&self, app: &AppHandle, proxy: Option<&str>) -> Result<u16> {
-        let key = proxy.unwrap_or(DIRECT_KEY).to_string();
+        self.get_or_start_with_options(app, proxy, LaunchOptions::default())
+    }
+
+    /// 启动一个**用户可见、可直接操作**的浏览器窗口实例，返回端口
+    ///
+    /// 用于「平台暂不支持自动发布，我想自己手动发」的场景：直接弹出真实
+    /// Chrome 窗口，账号登录态与 headless 实例完全隔离（独立 profile）。
+    ///
+    /// `headless=false` 会去掉 `--headless=new` 并加上 `--window-size`，
+    /// 让 Chrome 正常显示窗口。此时**不要再复用** headless 实例：同一个
+    /// `--user-data-dir` 已被 headless 进程占用，Chrome 的 ProcessSingleton
+    /// 会让第二个进程直接退出。因此这里用 `manual:<account_id>` 作为 key，
+    /// 并在 profile 目录上也加同一后缀，从根上避免冲突。
+    pub fn get_or_start_manual(
+        &self,
+        app: &AppHandle,
+        account_id: &str,
+        proxy: Option<&str>,
+    ) -> Result<u16> {
+        let key = format!("{MANUAL_KEY_PREFIX}{account_id}");
+        self.get_or_start_with_options(
+            app,
+            None,
+            LaunchOptions {
+                headless: false,
+                profile_suffix: Some(key.clone()),
+                // **必须带上账号自己的代理**：手动窗口是用户真实操作、真实
+                // 登录/发布的窗口，走错出口等于用本机公网 IP 登录矩阵账号，
+                // 直接暴露账号关联。此前这里写死 None，配置了代理的账号
+                // 在手动窗口里会静默走直连。
+                proxy: proxy.map(str::to_string),
+                key: Some(key),
+            },
+        )
+    }
+
+    fn get_or_start_with_options(
+        &self,
+        app: &AppHandle,
+        proxy: Option<&str>,
+        options: LaunchOptions,
+    ) -> Result<u16> {
+        let LaunchOptions {
+            headless,
+            profile_suffix,
+            proxy: proxy_override,
+            key: key_override,
+        } = options;
+        let proxy: Option<String> = proxy_override.or_else(|| proxy.map(str::to_string));
+        // headless 实例按代理分组；手动窗口实例用独立的 `manual:<id>` key，
+        // 否则会覆盖同一代理下正在使用的 headless 实例记录。
+        let key = key_override.unwrap_or_else(|| {
+            proxy
+                .clone()
+                .unwrap_or_else(|| DIRECT_KEY.to_string())
+        });
 
         // 已存在且进程存活：直接返回
         {
@@ -82,7 +172,7 @@ impl ObscuraManager {
 
         info!(
             "启动浏览器引擎实例（代理: {}，端口: {}）",
-            proxy.unwrap_or("直连"),
+            proxy.as_deref().unwrap_or("直连"),
             port
         );
 
@@ -139,10 +229,10 @@ impl ObscuraManager {
                     .iter()
                     .map(|arg| {
                         arg.replace("{port}", &port.to_string())
-                            .replace("{proxy}", proxy.unwrap_or(""))
+                            .replace("{proxy}", proxy.as_deref().unwrap_or(""))
                     })
                     .collect();
-                info!("启动自定义引擎（代理: {}，端口: {}）", proxy.unwrap_or("直连"), port);
+                info!("启动自定义引擎（代理: {}，端口: {}）", proxy.as_deref().unwrap_or("直连"), port);
                 app.shell().command(program).args(args)
             }
             engine::EngineOrigin::System | engine::EngineOrigin::Downloaded => {
@@ -152,30 +242,55 @@ impl ObscuraManager {
                 // 真 Chrome 原生加载系统字体，因此不需要 --font-dir。
                 // 每个实例（每个代理）必须用独立的 profile 目录：
                 // Chrome 对同一 --user-data-dir 的第二个进程会直接中止。
-                let profile = engine::chrome_profile_dir(&data_dir, &key);
-                let mut args: Vec<String> = vec![
-                    "--headless=new".to_string(),
-                    format!("--remote-debugging-port={port}"),
-                    // 外部 CDP 客户端（本机中继）需要被允许
-                    "--remote-allow-origins=*".to_string(),
-                    "--no-first-run".to_string(),
-                    "--no-default-browser-check".to_string(),
-                    "--disable-blink-features=AutomationControlled".to_string(),
-                    // Headless Chrome 默认把页面当作「后台标签页」：渲染进程被
-                    // 降优先级后 `document.visibilityState` 恒为 "hidden"，
-                    // CSS 入场动画（animation-play-state）随之被暂停。
-                    // 抖音登录卡正是靠 `login-enter` 动画从 opacity:0 淡入，
-                    // 动画一暂停就永远停在 0——截图里只剩背景和二维码外的空白，
-                    // 用户无法扫码也无法点击任何登录控件。这三个开关关掉后台
-                    // 降级，让页面按「可见前台」渲染。
-                    "--disable-backgrounding-occluded-windows".to_string(),
-                    "--disable-background-timer-throttling".to_string(),
-                    "--disable-renderer-backgrounding".to_string(),
-                    format!("--user-data-dir={}", profile.display()),
-                    "--window-size=1280,860".to_string(),
-                    format!("--user-agent={}", engine::chrome_user_agent(&version)),
-                ];
-                if let Some(p) = proxy {
+                // profile 目录：手动窗口加后缀，避免与 headless 实例的
+                // 同一 user-data-dir 冲突（Chrome ProcessSingleton 会让
+                // 第二个进程直接退出）。
+                let profile = match profile_suffix.as_deref() {
+                    Some(suffix) => engine::chrome_profile_dir(&data_dir, suffix),
+                    None => engine::chrome_profile_dir(&data_dir, &key),
+                };
+                let mut args: Vec<String> = Vec::new();
+                if headless {
+                    args.push("--headless=new".to_string());
+                }
+                args.push(format!("--remote-debugging-port={port}"));
+                // 外部 CDP 客户端（本机中继）需要被允许
+                args.push("--remote-allow-origins=*".to_string());
+                args.push("--no-first-run".to_string());
+                args.push("--no-default-browser-check".to_string());
+                args.push("--disable-blink-features=AutomationControlled".to_string());
+                // Headless Chrome 默认把页面当作「后台标签页」：渲染进程被
+                // 降优先级后 `document.visibilityState` 恒为 "hidden"，
+                // CSS 入场动画（animation-play-state）随之被暂停。
+                // 抖音登录卡正是靠 `login-enter` 动画从 opacity:0 淡入，
+                // 动画一暂停就永远停在 0——截图里只剩背景和二维码外的空白，
+                // 用户无法扫码也无法点击任何登录控件。这三个开关关掉后台
+                // 降级，让页面按「可见前台」渲染。
+                args.push("--disable-backgrounding-occluded-windows".to_string());
+                args.push("--disable-background-timer-throttling".to_string());
+                args.push("--disable-renderer-backgrounding".to_string());
+                args.push(format!("--user-data-dir={}", profile.display()));
+                // 有窗口模式给更大的默认尺寸，方便手动填写发布表单
+                args.push(if headless {
+                    "--window-size=1280,860".to_string()
+                } else {
+                    "--window-size=1440,900".to_string()
+                });
+                // UA 的主版本必须来自**实际启动的这个二进制**，不能直接用
+                // `version`（那是锁定的 CfT 版本）：本机 Chrome 是 156 而
+                // 锁定的是 157 时，会造出「UA 声明 157、内核 156」的假 UA。
+                // 探测失败则整项省略，让 Chrome 用它自己的真实 UA
+                // （去掉 --user-agent 后 Chrome 会补上 HeadlessChrome 标记，
+                //  但那仍然比假 UA 安全，且只在探测失败时发生）。
+                match engine::detect_major_version(&resolved.0) {
+                    Some(major) => {
+                        args.push(format!("--user-agent={}", engine::chrome_user_agent(&major)));
+                    }
+                    None => {
+                        warn!("探测不到引擎 {} 的版本，省略 --user-agent", resolved.0.display());
+                    }
+                }
+                if let Some(p) = proxy.as_deref() {
                     args.push(format!("--proxy-server={p}"));
                 }
                 app.shell()

@@ -116,6 +116,24 @@ pub async fn close_account_session(
         .map_err(|e| e.to_string())
 }
 
+/// 打开一个用户可见、可直接操作的浏览器窗口（手动发布用）
+///
+/// 平台尚未实现自动发布（抖音 / 公众号）时，用户在真实 Chrome 窗口里
+/// 自行完成发布。登录态与工作台会话共用同一份加密 cookie，但 profile
+/// 目录独立（`chrome-profile/manual:<account_id>`），因此不会与 headless
+/// 实例的 user-data-dir 冲突，也不会互相挤掉登录态。
+#[tauri::command]
+pub async fn open_manual_window(
+    app: AppHandle,
+    db: State<'_, Db>,
+    account_id: String,
+) -> Result<u16, String> {
+    let account = find_account(&db, &account_id)?;
+    crate::session::open_manual_window(&app, &db, &account)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// 账号会话检测（掉号检测）
 ///
 /// - 令牌型平台：用 `db.get_api_token` 取令牌 → `verify_token` 判定，**不打开

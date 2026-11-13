@@ -198,6 +198,15 @@ export const closeAccountSession = (accountId: string) =>
 export const checkAccountSession = (accountId: string) =>
   invoke<boolean>("check_account_session", { accountId });
 
+/**
+ * 打开一个用户可见、可直接操作的浏览器窗口（手动发布用）
+ *
+ * 平台未实现自动发布时，用户在真实 Chrome 窗口里自行完成发布。
+ * 登录态与工作台会话共用同一份加密 cookie，profile 目录独立。
+ */
+export const openManualWindow = (accountId: string) =>
+  invoke<number>("open_manual_window", { accountId });
+
 export const saveAccountCookies = (accountId: string) =>
   invoke<number>("save_account_cookies", { accountId });
 

@@ -1,8 +1,14 @@
 name: Build
 
+# **只在打 v* 标签时发布**。
+#
+# 之前这里还有 `branches: [main]`：push main 时 github.ref_name 就是
+# "main"，prepare 步骤会建出一个标题「营销通 main」、tag 为 main 的
+# 公开 release，而 tauri-action 的 tagName 也会指向 main。2026-11-09
+# 那次就真建出过一个「营销通 main」，只能事后手动删除并清理 tag。
+# 因此去掉 main 触发：主干代码走 ci.yml 验证，正式产物只由 tag 产生。
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -13,6 +19,19 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
+      # 保险：只有 v* 标签才允许创建 release。workflow_dispatch 在分支上
+      # 手动触发时 ref_name 是分支名（如 "main"），旧实现会照着分支名建
+      # 出一个公开 release。这里直接拦住，避免再产生垃圾 release。
+      - name: Refuse non-tag refs
+        run: |
+          case "${{ github.ref_name }}" in
+            v*) echo "ref 合法：${{ github.ref_name }}" ;;
+            *)
+              echo "::error::只能从 v* 标签发布，当前 ref 是 '${{ github.ref_name }}'"
+              exit 1
+              ;;
+          esac
+
       - name: Ensure release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

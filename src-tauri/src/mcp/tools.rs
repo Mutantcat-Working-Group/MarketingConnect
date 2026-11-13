@@ -29,6 +29,7 @@ pub fn definitions(config: &McpConfig) -> Vec<Value> {
         json!({"name":"recent_logs","description":"查询最近的营销通事件日志。","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":200,"description":"返回条数，默认 50"}}}}),
         json!({"name":"check_sensitive_words","description":"检测文案中的敏感词。","inputSchema":{"type":"object","properties":{"text":text_property("需要检测的文本")},"required":["text"]}}),
         json!({"name":"open_account_session","description":format!("打开指定账号的浏览器会话{}。", write_note),"inputSchema":{"type":"object","properties":{"account_id":text_property("账号 ID")},"required":["account_id"]}}),
+        json!({"name":"open_manual_window","description":format!("为指定账号打开一个**用户可见**的浏览器窗口，直接停在平台的发布页，供人工手动发布（抖音 / 公众号等未实现自动发布的平台用这个）{}。窗口与工作台会话共用同一份加密登录态，但 profile 目录独立。", write_note),"inputSchema":{"type":"object","properties":{"account_id":text_property("账号 ID")},"required":["account_id"]}}),
         json!({"name":"batch_publish","description":format!("将同一内容发布到多个账号{}。", write_note),"inputSchema":{"type":"object","properties":{"account_ids":{"type":"array","items":{"type":"string"},"description":"账号 ID 列表"},"title":{"type":"string","description":"可选标题"},"content":text_property("正文内容"),"media_paths":{"type":"string","description":"可选，逗号分隔的媒体路径"}},"required":["account_ids","content"]}}),
         json!({"name":"create_account","description":format!("新增一个营销账号（登录账号与密码可选，可稍后在登录面板用验证码/扫码登录）{}。", write_note),"inputSchema":{"type":"object","properties":{"platform":text_property("平台 ID"),"name":text_property("备注名称"),"username":{"type":"string","description":"可选，登录账号/手机号"},"password":{"type":"string","description":"可选登录密码"},"proxy_url":{"type":"string","description":"可选代理地址"},"group_name":{"type":"string","description":"可选分组"}},"required":["platform","name"]}}),
         json!({"name":"delete_account","description":format!("删除一个账号及其会话{}。", write_note),"inputSchema":{"type":"object","properties":{"account_id":text_property("账号 ID")},"required":["account_id"]}}),
@@ -87,6 +88,7 @@ pub async fn call(
     let write_tool = matches!(
         name,
         "open_account_session"
+            | "open_manual_window"
             | "check_account_session"
             | "batch_publish"
             | "create_account"
@@ -136,6 +138,12 @@ pub async fn call(
             let sessions = app.state::<SessionRegistry>();
             accounts::open_account_session(app.clone(), db, sessions, account_id).await?;
             Ok(json!({"success": true}))
+        }
+        "open_manual_window" => {
+            let account_id = required_string(args, "account_id")?;
+            let db = app.state::<Db>();
+            let port = accounts::open_manual_window(app.clone(), db, account_id).await?;
+            Ok(json!({"success": true, "port": port}))
         }
         "batch_publish" => {
             let account_ids = string_list(args, "account_ids")?;

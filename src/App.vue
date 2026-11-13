@@ -134,6 +134,26 @@ async function loadLogs() {
   }
 }
 
+// 日志条只在启动时读一次，会一直显示几小时前的陈旧记录（用户看到两条
+// 相同的「会话已掉线」就是这么来的）。这里做两件事：
+// 1. 定时刷新，让底栏反映当前状态；
+// 2. 折叠相邻的重复记录，避免同一事件刷屏。
+let logTimer: ReturnType<typeof setInterval> | null = null;
+
+/** 折叠相邻的重复日志：同一 event+detail 连续出现时只显示最新一条 */
+const visibleLogs = computed(() => {
+  const seen = new Set<string>();
+  const out: api.EventLog[] = [];
+  for (const log of logs.value) {
+    const key = `${log.event}\u0000${log.detail ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(log);
+    if (out.length >= 3) break;
+  }
+  return out;
+});
+
 async function toggleEngine() {
   engineLoading.value = true;
   try {
@@ -168,13 +188,19 @@ function onAccountDeleted(id: string) {
 
 onMounted(async () => {
   window.addEventListener("accounts-changed", loadAccounts);
+  // 掉号检测会写入新日志，账号状态变化时底栏也应立即反映
+  window.addEventListener("accounts-changed", loadLogs);
   await Promise.all([loadAccounts(), loadEngine(), loadLogs()]);
+  logTimer = setInterval(loadLogs, 30_000);
   window.addEventListener("keydown", onKeydown);
 });
 
 onBeforeUnmount(() => {
+  if (logTimer !== null) clearInterval(logTimer);
+  logTimer = null;
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("accounts-changed", loadAccounts);
+  window.removeEventListener("accounts-changed", loadLogs);
 });
 </script>
 
@@ -308,7 +334,7 @@ onBeforeUnmount(() => {
 
         <!-- 底部日志条 -->
         <footer v-if="logs.length > 0" class="logbar">
-          <span v-for="log in logs.slice(0, 3)" :key="log.id" class="log-item" :class="log.level">
+          <span v-for="log in visibleLogs" :key="log.id" class="log-item" :class="log.level">
             [{{ log.event }}] {{ log.detail || "" }}
           </span>
         </footer>

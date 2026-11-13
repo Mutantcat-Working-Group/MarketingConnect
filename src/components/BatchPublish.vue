@@ -140,7 +140,32 @@ const capabilitySummary = computed(() =>
 
 /** 不支持自动发布的平台给出的统一提示 */
 const UNIMPLEMENTED_HINT =
-  "该平台自动发布尚未实现，请在「自定义平台」中配置选择器，或打开会话后手动发布";
+  "该平台自动发布尚未实现。可点右侧「打开手动发布窗口」，在真实浏览器里自行发布";
+
+/** 打开手动发布窗口的结果提示 */
+const manualMessage = ref("");
+const manualBusy = ref<string | null>(null);
+
+/**
+ * 打开用户可见的浏览器窗口，让用户自己在平台里发布
+ *
+ * 这是「不可自动发布」平台的正确出路：headless 截图+坐标转发做不了
+ * 拖拽、下拉和富文本编辑，真实窗口可以。登录态与工作台共用同一份
+ * 加密 cookie，profile 目录独立，不会互相挤掉。
+ */
+async function openManual(account: api.Account) {
+  if (manualBusy.value) return;
+  manualBusy.value = account.id;
+  manualMessage.value = "";
+  try {
+    await api.openManualWindow(account.id);
+    manualMessage.value = `已为「${account.name}」打开浏览器窗口，请在该窗口中完成发布。`;
+  } catch (e) {
+    manualMessage.value = `打开窗口失败：${e}`;
+  } finally {
+    manualBusy.value = null;
+  }
+}
 
 const unimplementedMessage = computed(() =>
   `${unimplementedPlatforms.value.join("、")}：${UNIMPLEMENTED_HINT}`
@@ -347,6 +372,16 @@ onBeforeUnmount(() => {
                 >
                   不可自动发布
                 </span>
+                <button
+                  v-if="!capsOf(a.platform).publish"
+                  class="manual-btn"
+                  type="button"
+                  :disabled="manualBusy !== null"
+                  :title="UNIMPLEMENTED_HINT"
+                  @click.prevent.stop="openManual(a)"
+                >
+                  {{ manualBusy === a.id ? "打开中…" : "打开手动发布窗口" }}
+                </button>
                 <span class="platform-tag">{{ platformName(a.platform) }}</span>
                 <span class="badge" :class="a.status">{{ statusText(a.status) }}</span>
               </label>
@@ -438,6 +473,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </section>
+      </div>
+
+      <div v-if="manualMessage" class="manual-notice" role="status">
+        {{ manualMessage }}
       </div>
 
       <div class="modal-footer">
@@ -761,6 +800,29 @@ textarea {
 
 .footer-msg.err {
   color: var(--danger);
+}
+
+.manual-btn {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary, #b9bcc4);
+  cursor: pointer;
+}
+.manual-btn:hover:not(:disabled) { border-color: var(--accent, #4f7cff); color: var(--text-primary); }
+.manual-btn:disabled { opacity: .5; cursor: default; }
+
+.manual-notice {
+  margin: 0 20px 10px;
+  padding: 9px 12px;
+  border-left: 2px solid var(--success, #3fb950);
+  background: rgba(63, 185, 80, .08);
+  color: var(--text-secondary, #b9bcc4);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .publish-btn {
