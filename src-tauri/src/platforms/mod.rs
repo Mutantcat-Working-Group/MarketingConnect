@@ -24,17 +24,15 @@ mod wechat_mp;
 mod xiaohongshu;
 pub mod select;
 pub mod zhihu;
-pub use csdn::CsdnAdapter;
-pub use custom::{CustomPlatform, CustomPlatformAdapter};
-pub use douyin::DouyinAdapter;
+// `CustomPlatform` 是自定义平台的数据结构，`db::list_custom_platforms` 的
+// 返回类型用它，必须继续对外可见；适配器本身只在 `all_adapters` 内部构造。
+pub use custom::CustomPlatform;
 // 再导出选择器内核：`click_any` / `fill_any` 已被 csdn / xiaohongshu 等适配器
 // 经 `crate::platforms::` 路径使用。`ElementOps` / `press_key` / `upload_any`
 // 本身已在 Task 9 接入知乎发布流程（知乎直接走 `super::select::` 路径），
 // 但这三个名字的再导出仍无调用方，故保留 allow 以免引入新的编译警告。
 #[allow(unused_imports)]
 pub use select::{ElementOps, click_any, fill_any, press_key, upload_any};
-pub use wechat_mp::WechatMpAdapter;
-pub use xiaohongshu::XiaohongshuAdapter;
 
 /// 内置平台 ID 列表
 ///
@@ -160,6 +158,11 @@ pub trait PlatformAdapter: Send + Sync {
     fn capabilities(&self) -> Capabilities;
 
     /// 登录流程：使用帐密登录，返回登录后的 cookie JSON
+    ///
+    /// 当前没有调用方：登录走 `login::login_action` 的「截图 + 定位点击/输入」
+    /// 交互路径，各平台的登录页差异太大，无法用统一的选择器脚本覆盖。
+    /// 保留该接口是为了让适配器仍能描述自己的登录方式，且不影响编译。
+    #[allow(dead_code)]
     async fn login(&self, page: &chromiumoxide::Page, username: &str, password: &str) -> Result<String>;
 
     /// 发布内容
@@ -186,9 +189,8 @@ pub trait PlatformAdapter: Send + Sync {
 
     /// 手动发布页 URL
     ///
-    /// 「打开手动发布窗口」会用这个地址。默认退回创作者首页：
-    /// 抖音 / 公众号没有实现自动发布，但用户在首页点两下就能到发布页，
-    /// 比给每个适配器硬编码一个可能过期的发布页地址更稳。
+    /// 「打开手动发布窗口」会用这个地址，让窗口直接停在能上传/写内容的那一页。
+    /// 默认退回创作者首页：新增适配器时不必先知道发布页地址，也能打开窗口。
     fn publish_url(&self) -> Option<&str> {
         None
     }

@@ -3,7 +3,8 @@
 //! 定时发布调度器
 //!
 //! 基于 tokio-cron-scheduler：
-//! - 创建发布任务时若带 cron 表达式，注册定时作业
+//! - 创建发布任务时若带 cron 表达式，注册定时作业（可重复触发）
+//! - 若带 `scheduled_at`（本应用的绝对时间，秒），注册一次性作业
 //! - 作业触发时执行发布流程（会话页面 → 平台适配器 → 更新任务状态）
 
 use crate::db::Db;
@@ -11,6 +12,7 @@ use crate::platforms::{self, PublishContent};
 use crate::session::SessionRegistry;
 use anyhow::Result;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{error, info, warn};
@@ -59,12 +61,52 @@ impl PublishScheduler {
         info!("已注册定时任务 {}（cron: {}）", task_id_log, cron_expr);
         Ok(())
     }
+
+    /// 注册一次性发布作业（`scheduled_at` 用）
+    ///
+    /// `scheduled_at` 是本应用的绝对时间（秒）；延迟已过或为零时立刻执行，
+    /// 与 `create_publish_task` 里「无 cron 无定时 → 立即发布」保持一致的语义。
+    pub async fn add_one_shot(
+        &self,
+        app: AppHandle,
+        scheduled_at: i64,
+        task_id: String,
+        account_id: String,
+    ) -> Result<()> {
+        let task_id_log = task_id.clone();
+        let delay_secs = scheduled_at - chrono::Utc::now().timestamp();
+        if delay_secs <= 0 {
+            // 已经过点：不要注册一个 0 延迟作业再依赖调度器 tick，
+            // 直接跑，免得用户看到任务卡在 pending 半秒以上。
+            info!("任务 {} 的定时时间已过，立即执行", task_id_log);
+            tauri::async_runtime::spawn(async move {
+                execute_publish(&app, &task_id, &account_id).await;
+            });
+            return Ok(());
+        }
+
+        let job = Job::new_one_shot_async(Duration::from_secs(delay_secs as u64), move |_uuid, _lock| {
+            let app = app.clone();
+            let task_id = task_id.clone();
+            let account_id = account_id.clone();
+            Box::pin(async move {
+                execute_publish(&app, &task_id, &account_id).await;
+            })
+        })?;
+        self.scheduler.add(job).await?;
+        info!(
+            "已注册一次性任务 {}（{} 秒后执行，unix {}）",
+            task_id_log, delay_secs, scheduled_at
+        );
+        Ok(())
+    }
 }
 
-/// 启动时重建所有已存在的 cron 任务
+/// 启动时重建所有已存在的定时任务
 ///
-/// 调度器的作业只存在于内存中，重启后必须按数据库里的 cron_expr 重新注册，
-/// 否则用户之前创建的定时任务会静默失效。
+/// 调度器的作业只存在于内存中，重启后必须按数据库里的 `cron_expr` /
+/// `scheduled_at` 重新注册，否则用户之前创建的任务会静默失效。
+/// 只重建 `pending` 的一次性任务：已执行完的任务再排一次会重复发布。
 pub async fn reload_jobs(
     app: &AppHandle,
     scheduler: &PublishScheduler,
@@ -90,17 +132,32 @@ pub async fn reload_jobs(
             }
         };
         for task in tasks {
-            let Some(cron) = task.cron_expr.clone().filter(|c| !c.trim().is_empty()) else {
+            if let Some(cron) = task.cron_expr.clone().filter(|c| !c.trim().is_empty()) {
+                match scheduler
+                    .add_job(app.clone(), &cron, task.id.clone(), account.id.clone())
+                    .await
+                {
+                    Ok(()) => registered += 1,
+                    Err(error) => {
+                        failed += 1;
+                        error!("重建定时任务 {} 失败: {}", task.id, error);
+                    }
+                }
                 continue;
-            };
-            match scheduler
-                .add_job(app.clone(), &cron, task.id.clone(), account.id.clone())
-                .await
+            }
+            // 一次性任务：cron 优先，没有 cron 才看 scheduled_at
+            if task.status == "pending"
+                && let Some(scheduled_at) = task.scheduled_at
             {
-                Ok(()) => registered += 1,
-                Err(error) => {
-                    failed += 1;
-                    error!("重建定时任务 {} 失败: {}", task.id, error);
+                match scheduler
+                    .add_one_shot(app.clone(), scheduled_at, task.id.clone(), account.id.clone())
+                    .await
+                {
+                    Ok(()) => registered += 1,
+                    Err(error) => {
+                        failed += 1;
+                        error!("重建一次性任务 {} 失败: {}", task.id, error);
+                    }
                 }
             }
         }

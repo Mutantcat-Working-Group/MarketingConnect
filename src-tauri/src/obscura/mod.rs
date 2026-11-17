@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Mutantcat
-//! Obscura sidecar 进程管理（多实例）
+//! 浏览器引擎 sidecar 进程管理（多实例）
 //!
-//! Obscura 的 `--proxy` 是进程级参数，因此每账号独立代理的方案是
-//! **按代理分组运行多个 obscura serve 实例**：
+//! 引擎的 `--proxy` 是进程级参数，因此每账号独立代理的方案是
+//! **按代理分组运行多个引擎实例**：
 //! - 每个唯一代理地址（含"直连"）对应一个实例
 //! - 实例自动分配端口（9222 起）
 //! - 账号会话绑定到与其代理匹配的实例
+//!
+//! 引擎可执行文件按「显式覆盖 → 本机 Chrome/Chromium → 已下载的
+//! Chrome for Testing → 自动下载」解析（见 `engine`），因此这里的多数
+//! 实例其实是真正的 Chrome。
 //!
 //! 注意：不使用 `--storage-dir`——同一进程内的多个 BrowserContext
 //! 会共享磁盘存储，破坏多账号隔离。会话持久化由加密的
@@ -74,13 +78,16 @@ impl Default for LaunchOptions {
     }
 }
 
-/// 单个 Obscura 实例
+/// 单个引擎实例
 struct ObscuraInstance {
     port: u16,
     child: CommandChild,
 }
 
-/// Obscura 多实例管理器
+/// 引擎多实例管理器
+///
+/// 类型名沿用 `ObscuraManager`：它原本只驱动 obscura 这个自带引擎，
+/// 现在同样驱动本机 Chrome / Chrome for Testing。
 pub struct ObscuraManager {
     /// proxy_key → 实例（"direct" 表示直连）
     instances: Mutex<HashMap<String, ObscuraInstance>>,
@@ -236,8 +243,8 @@ impl ObscuraManager {
                 app.shell().command(program).args(args)
             }
             engine::EngineOrigin::System | engine::EngineOrigin::Downloaded => {
-                // 这是真正的 Chrome / Chromium，参数与 obscura 完全不同：
-                // obscura 用 `serve --port … --stealth --font-dir …`，而 Chrome
+                // 这是真正的 Chrome / Chromium，参数与自带 sidecar 引擎不同：
+                // 后者用 `serve --port … --stealth --font-dir …`，而 Chrome
                 // 没有 `serve` 子命令，会把 serve 当成网址、永不在该端口监听。
                 // 真 Chrome 原生加载系统字体，因此不需要 --font-dir。
                 // 每个实例（每个代理）必须用独立的 profile 目录：
@@ -331,6 +338,14 @@ impl ObscuraManager {
             if !is_port_open(port) {
                 return port;
             }
+        }
+    }
+
+    /// 停止指定 key 的实例
+    pub fn stop_key(&self, key: &str) {
+        if let Some(inst) = self.instances.lock().unwrap().remove(key) {
+            info!("停止浏览器引擎实例（端口 {}）", inst.port);
+            let _ = inst.child.kill();
         }
     }
 

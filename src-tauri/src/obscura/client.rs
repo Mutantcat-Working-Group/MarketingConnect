@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Mutantcat
 //! CDP 客户端封装（基于 chromiumoxide 0.7）
 //!
-//! 连接到 Obscura 的 CDP 服务，为每个账号创建独立的
+//! 连接到浏览器引擎的 CDP 服务，为每个账号创建独立的
 //! BrowserContext（cookie/storage 隔离 + 指纹随机化）。
 
 use anyhow::{Context, Result};
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use tracing::info;
 
-/// CDP 浏览器连接（每个 Obscura 实例一个）
+/// CDP 浏览器连接（每个引擎实例一个）
 pub struct CdpBrowser {
     browser: Browser,
     _handler_task: tokio::task::JoinHandle<()>,
@@ -102,7 +102,7 @@ impl CdpBrowser {
 
 /// 全局 CDP 连接状态（Tauri managed state）
 ///
-/// 每个 Obscura 实例（按代理分组）对应一条 CDP 连接，
+/// 每个引擎实例（按代理分组）对应一条 CDP 连接，
 /// 以实例端口为 key。
 pub struct CdpState {
     browsers: TokioMutex<HashMap<u16, Arc<CdpBrowser>>>,

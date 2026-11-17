@@ -3,7 +3,7 @@
 //! CDP 事件修补中继
 //!
 //! 引擎发来的 `Network.requestWillBeSent` / `Network.responseReceived` 事件
-//! 缺少若干 CDP 规范要求的必填字段。这不是 Obscura 独有的问题：在 Chrome for
+//! 缺少若干 CDP 规范要求的必填字段。这不是某个引擎独有的问题：在 Chrome for
 //! Testing 157 上实测同样会收到缺字段的 `Network.requestWillBeSentExtraInfo`
 //! （缺 `params.clientSecurityState`）与 `Page.frameRequestedNavigation`
 //! （`reason` 取值不在枚举内）。因此本模块对默认的真实 Chrome 引擎**同样必需**，
@@ -71,13 +71,33 @@ impl CdpRelay {
         ports.insert(engine_port, relay_port);
         Ok(relay_port)
     }
+
+    /// 查询已有的中继端口（不会新建中继）
+    ///
+    /// 关闭窗口时用：引擎可能已经不在，新建一个指向死引擎的中继只会白起任务。
+    pub async fn lookup(&self, engine_port: u16) -> Option<u16> {
+        self.ports.lock().await.get(&engine_port).copied()
+    }
+
+    /// 忘记某个引擎端口的映射
+    ///
+    /// 引擎进程被停止后，这条映射已无意义；不删会让表随实例数量无界增长。
+    /// 中继的监听任务会在引擎不可达后自行结束，无需显式取消。
+    pub async fn forget(&self, engine_port: u16) {
+        self.ports.lock().await.remove(&engine_port);
+    }
+
+    /// 清空所有映射（停止全部引擎时用）
+    pub async fn clear(&self) {
+        self.ports.lock().await.clear();
+    }
 }
 
 /// 解析引擎的 CDP WebSocket 地址。
 ///
-/// obscura 固定暴露 `/devtools/browser`，而真正的 Chromium 需要在路径里带上
-/// 启动时生成的 UUID（只能从 `/json/version` 拿到）。这里优先问
-/// `/json/version`，失败时回退到 obscura 的固定路径。
+/// 自带 sidecar 引擎固定暴露 `/devtools/browser`，而真正的 Chromium 需要在
+/// 路径里带上启动时生成的 UUID（只能从 `/json/version` 拿到）。这里优先问
+/// `/json/version`，失败时回退到 sidecar 的固定路径。
 async fn upstream_ws_url(engine_port: u16) -> String {
     let version_url = format!("http://127.0.0.1:{}/json/version", engine_port);
     if let Ok(response) = reqwest::get(&version_url).await {

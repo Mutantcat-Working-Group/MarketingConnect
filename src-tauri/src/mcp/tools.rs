@@ -142,7 +142,8 @@ pub async fn call(
         "open_manual_window" => {
             let account_id = required_string(args, "account_id")?;
             let db = app.state::<Db>();
-            let port = accounts::open_manual_window(app.clone(), db, account_id).await?;
+            let sessions = app.state::<SessionRegistry>();
+            let port = accounts::open_manual_window(app.clone(), db, sessions, account_id).await?;
             Ok(json!({"success": true, "port": port}))
         }
         "batch_publish" => {

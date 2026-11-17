@@ -75,6 +75,11 @@ impl RpcError {
         }
     }
 
+    /// 内部错误（-32603）
+    ///
+    /// 保留完整的 JSON-RPC 错误码集合：当前没有调用方，但协议层缺一个码
+    /// 会让后续接入方不得不另起炉灶。
+    #[allow(dead_code)]
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             code: -32603,

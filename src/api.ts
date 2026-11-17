@@ -203,12 +203,18 @@ export const checkAccountSession = (accountId: string) =>
  *
  * 平台未实现自动发布时，用户在真实 Chrome 窗口里自行完成发布。
  * 登录态与工作台会话共用同一份加密 cookie，profile 目录独立。
+ * 重复调用只把已有窗口置前，不会重开。
  */
 export const openManualWindow = (accountId: string) =>
   invoke<number>("open_manual_window", { accountId });
 
-export const saveAccountCookies = (accountId: string) =>
-  invoke<number>("save_account_cookies", { accountId });
+/** 把手动窗口当前的登录态写回数据库（用户在窗口里登录后调用） */
+export const saveManualWindowCookies = (accountId: string) =>
+  invoke<number>("save_manual_window_cookies", { accountId });
+
+/** 关闭手动窗口 */
+export const closeManualWindow = (accountId: string) =>
+  invoke<void>("close_manual_window", { accountId });
 
 export const captureScreenshot = (accountId: string) =>
   invoke<string>("capture_screenshot", { accountId });

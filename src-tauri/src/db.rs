@@ -368,6 +368,9 @@ impl Db {
     }
 
     /// 获取账号解密后的密码
+    ///
+    /// 目前只有测试在用：登录走浏览器交互，不读已存密码。
+    #[cfg(test)]
     pub fn get_account_password(&self, id: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let enc: Option<Vec<u8>> = conn
@@ -571,6 +574,12 @@ impl Db {
 
     // ---------- 事件日志 ----------
 
+    /// 事件日志保留条数
+    ///
+    /// 日志只用于底部状态条与排查，不参与业务；不设上限时表会随运行时间
+    /// 无界增长，而旧记录还会在底栏里冒充当前状态。
+    const EVENT_LOG_RETENTION: i64 = 200;
+
     /// 记录事件
     pub fn log_event(
         &self,
@@ -585,6 +594,11 @@ impl Db {
             "INSERT INTO event_logs (account_id, level, event, detail, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![account_id, level, event, detail, now],
+        )?;
+        conn.execute(
+            "DELETE FROM event_logs WHERE id NOT IN
+                (SELECT id FROM event_logs ORDER BY id DESC LIMIT ?1)",
+            params![Self::EVENT_LOG_RETENTION],
         )?;
         Ok(())
     }
@@ -765,6 +779,28 @@ mod account_tests {
         };
         db.migrate().unwrap();
         db
+    }
+
+    #[test]
+    fn event_logs_are_trimmed_to_retention_limit() {
+        let db = db();
+        let total = Db::EVENT_LOG_RETENTION + 5;
+        for i in 0..total {
+            db.log_event(None, "info", "session_check", Some(&format!("第 {i} 条")))
+                .unwrap();
+        }
+        let rows: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM event_logs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, Db::EVENT_LOG_RETENTION);
+        // 保留的是最新的那些
+        let newest = db.recent_logs(1).unwrap();
+        assert_eq!(newest[0].detail, Some(format!("第 {} 条", total - 1)));
+        let oldest = db.recent_logs(Db::EVENT_LOG_RETENTION).unwrap();
+        assert_eq!(oldest.last().unwrap().detail, Some("第 5 条".to_string()));
     }
 
     fn new_account() -> NewAccount {

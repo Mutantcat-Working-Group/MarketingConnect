@@ -59,6 +59,11 @@ impl PlatformAdapter for CustomPlatformAdapter {
         &self.config.creator_url
     }
 
+    fn publish_url(&self) -> Option<&str> {
+        // 自定义平台在设置里就配了发布页，手动窗口应该直接停在那一页
+        Some(self.config.publish_url.as_str())
+    }
+
     // 有发布页与内容选择器即视为可发文本，媒体能力取决于是否配置了选择器。
     //
     // `publish` 必须绑定到「是否配置了提交按钮选择器」：没有提交选择器时

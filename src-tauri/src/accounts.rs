@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Mutantcat
 //! 账号管理 Tauri 命令
 //!
-//! 前端通过这些命令与后端交互：账号 CRUD、Obscura 引擎控制、
+//! 前端通过这些命令与后端交互：账号 CRUD、浏览器引擎控制、
 //! 会话管理（开关/检测/cookie 持久化）、发布任务管理。
 
 use crate::db::{Account, AccountStatus, Db, NewAccount, PublishTask};
@@ -36,7 +36,7 @@ pub async fn delete_account(
     db.delete_account(&id).map_err(|e| e.to_string())
 }
 
-/// 启动 Obscura 引擎（直连实例）
+/// 启动浏览器引擎（直连实例）
 ///
 /// 带代理的账号会在打开会话时按需自动启动对应实例。
 #[tauri::command]
@@ -50,10 +50,10 @@ pub fn start_engine(
     Ok(format!("引擎已启动，直连实例端口 {}", port))
 }
 
-/// 停止 Obscura 引擎（所有实例）
+/// 停止浏览器引擎（所有实例）
 ///
 /// 必须连同会话与 CDP 连接一起失效：只杀进程会让界面留着指向死引擎的
-/// 「已打开会话」，之后的操作会以难以理解的方式失败。
+/// 「已打开会话」，之后的操作会以难以理解的方式失败。手动发布窗口也一并关闭。
 #[tauri::command]
 pub async fn stop_engine(
     app: AppHandle,
@@ -65,7 +65,14 @@ pub async fn stop_engine(
             tracing::warn!("停止引擎前关闭账号 {} 的会话失败: {}", account_id, error);
         }
     }
+    for account_id in sessions.manual_account_ids() {
+        if let Err(error) = sessions.close_manual_window(&app, &account_id).await {
+            tracing::warn!("停止引擎前关闭账号 {} 的手动窗口失败: {}", account_id, error);
+        }
+    }
     obscura.stop_all();
+    // 引擎端口映射随进程一起失效；不清掉会让 CdpRelay 里的表只增不减
+    app.state::<crate::obscura::CdpRelay>().clear().await;
     app.state::<crate::obscura::CdpState>().clear_all().await;
     Ok(())
 }
@@ -126,10 +133,40 @@ pub async fn close_account_session(
 pub async fn open_manual_window(
     app: AppHandle,
     db: State<'_, Db>,
+    sessions: State<'_, SessionRegistry>,
     account_id: String,
 ) -> Result<u16, String> {
     let account = find_account(&db, &account_id)?;
-    crate::session::open_manual_window(&app, &db, &account)
+    crate::session::open_manual_window(&app, &db, &sessions, &account)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 把手动窗口当前的登录态导出到数据库（加密）
+///
+/// 手动窗口是用户真实登录/操作的窗口，登录态只有写回数据库才能被工作台的
+/// headless 会话复用。窗口没有保存值时会明确报错，不会用空数据覆盖旧凭据。
+#[tauri::command]
+pub async fn save_manual_window_cookies(
+    db: State<'_, Db>,
+    sessions: State<'_, SessionRegistry>,
+    account_id: String,
+) -> Result<usize, String> {
+    sessions
+        .export_manual_cookies(&db, &account_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 关闭手动窗口（释放 context）
+#[tauri::command]
+pub async fn close_manual_window(
+    app: AppHandle,
+    sessions: State<'_, SessionRegistry>,
+    account_id: String,
+) -> Result<(), String> {
+    sessions
+        .close_manual_window(&app, &account_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -237,19 +274,6 @@ pub async fn check_account_session(
     }
 
     Ok(valid)
-}
-
-/// 导出账号 cookie 到数据库（加密）
-#[tauri::command]
-pub async fn save_account_cookies(
-    db: State<'_, Db>,
-    sessions: State<'_, SessionRegistry>,
-    account_id: String,
-) -> Result<usize, String> {
-    sessions
-        .export_cookies(&db, &account_id)
-        .await
-        .map_err(|e| e.to_string())
 }
 
 /// 保存并校验平台 API 令牌（仅令牌型平台）
@@ -365,7 +389,25 @@ pub async fn create_publish_task(
             );
             return Err(format!("定时表达式无效，任务未注册：{}", error));
         }
-    } else if task.scheduled_at.is_none() {
+    } else if let Some(scheduled_at) = task.scheduled_at {
+        // 带定时时间：注册一次性作业，到点执行。
+        // 之前这个分支完全缺失，带 scheduled_at 的任务会永远停在 pending。
+        let scheduler = app
+            .try_state::<Arc<crate::scheduler::PublishScheduler>>()
+            .map(|state| state.inner().clone())
+            .ok_or_else(|| "定时调度器未就绪，任务未注册，请重启应用后重试".to_string())?;
+        if let Err(error) = scheduler
+            .add_one_shot(app.clone(), scheduled_at, task.id.clone(), account_id.clone())
+            .await
+        {
+            let _ = db.update_task_status(
+                &task.id,
+                "failed",
+                Some(&format!("定时任务注册失败：{}", error)),
+            );
+            return Err(format!("定时任务注册失败：{}", error));
+        }
+    } else {
         // 没有 cron 也没有定时时间：界面提示「立即发布」，就必须真的发布。
         // 之前只入库不执行，任务会永远停在 pending。
         let app_handle = app.clone();

@@ -17,7 +17,8 @@ const title = ref("");
 const content = ref("");
 const mediaPaths = ref("");
 const cronExpr = ref("");
-const submitting = ref(false);
+/** 定时发布（本地时间，datetime-local 的值）；与 cron 互斥 */
+const scheduledLocal = ref("");const submitting = ref(false);
 const message = ref("");
 
 // 敏感词检测
@@ -115,6 +116,14 @@ async function saveToken() {
   }
 }
 
+/** 任务列表的「定时」列：cron 优先，没有则显示一次性定时时间 */
+function scheduleText(t: api.PublishTask): string {
+  if (t.scheduled_at) {
+    return new Date(t.scheduled_at * 1000).toLocaleString();
+  }
+  return "-";
+}
+
 async function loadTasks() {
   loading.value = true;
   try {
@@ -132,6 +141,7 @@ async function reloadForAccount() {
   content.value = "";
   mediaPaths.value = "";
   cronExpr.value = "";
+  scheduledLocal.value = "";
   message.value = "";
   sensitiveResult.value = null;
   tokenInput.value = "";
@@ -139,6 +149,7 @@ async function reloadForAccount() {
   tokenConfigured.value = null;
   platformInfo.value = null;
   platformLoaded.value = false;
+  manualMessage.value = "";
   await Promise.all([loadTasks(), loadPlatformInfo()]);
   await refreshTokenConfigured();
 }
@@ -159,6 +170,20 @@ async function submitTask() {
     message.value = "请输入发布内容";
     return;
   }
+  if (cronExpr.value.trim() && scheduledLocal.value) {
+    message.value = "定时表达式与定时时间只能选一个";
+    return;
+  }
+  // datetime-local 是本地时间字符串，转成秒级 unix 时间戳（与 DB 列一致）
+  let scheduledAt: number | undefined;
+  if (scheduledLocal.value) {
+    const ms = new Date(scheduledLocal.value).getTime();
+    if (Number.isNaN(ms)) {
+      message.value = "定时时间格式无效";
+      return;
+    }
+    scheduledAt = Math.floor(ms / 1000);
+  }
   submitting.value = true;
   message.value = "";
   try {
@@ -168,17 +193,67 @@ async function submitTask() {
       content: content.value,
       mediaPaths: mediaPaths.value || undefined,
       cronExpr: cronExpr.value || undefined,
+      scheduledAt,
     });
-    message.value = "任务已创建";
+    message.value = scheduledAt ? "任务已创建，到点自动发布" : "任务已创建";
     title.value = "";
     content.value = "";
     mediaPaths.value = "";
     cronExpr.value = "";
+    scheduledLocal.value = "";
     await loadTasks();
   } catch (e) {
     message.value = `创建失败: ${e}`;
   } finally {
     submitting.value = false;
+  }
+}
+
+// 手动发布窗口：可见 Chrome，独立 profile，登录态与工作台共用一份加密 cookie
+const manualBusy = ref(false);
+const manualMessage = ref("");
+const manualMessageKind = ref<"info" | "ok" | "err">("info");
+
+function setManualMessage(kind: "info" | "ok" | "err", text: string) {
+  manualMessageKind.value = kind;
+  manualMessage.value = text;
+}
+
+async function openManualWindow() {
+  manualBusy.value = true;
+  setManualMessage("info", "正在打开浏览器窗口…");
+  try {
+    const port = await api.openManualWindow(props.accountId);
+    setManualMessage("ok", `窗口已打开（调试端口 ${port}）。在窗口里完成登录或发布后，记得点「保存登录态」。`);
+  } catch (e) {
+    setManualMessage("err", `打开窗口失败: ${e}`);
+  } finally {
+    manualBusy.value = false;
+  }
+}
+
+async function saveManualCookies() {
+  manualBusy.value = true;
+  setManualMessage("info", "正在读取窗口登录态…");
+  try {
+    const count = await api.saveManualWindowCookies(props.accountId);
+    setManualMessage("ok", `已保存 ${count} 个 cookie，工作台会话下次打开会直接复用。`);
+  } catch (e) {
+    setManualMessage("err", `保存失败: ${e}`);
+  } finally {
+    manualBusy.value = false;
+  }
+}
+
+async function closeManualWindow() {
+  manualBusy.value = true;
+  try {
+    await api.closeManualWindow(props.accountId);
+    setManualMessage("info", "窗口已关闭");
+  } catch (e) {
+    setManualMessage("err", `关闭失败: ${e}`);
+  } finally {
+    manualBusy.value = false;
   }
 }
 
@@ -192,7 +267,19 @@ onMounted(reloadForAccount);
   <div class="workspace">
     <div class="workspace-header">
       <h2>发布工作台</h2>
-      <button class="danger" @click="emit('close', accountId)">关闭标签</button>
+      <div class="header-actions">
+        <!-- 浏览器族平台才有可见窗口这一路径；令牌型平台靠 API 发布 -->
+        <button
+          v-if="platformLoaded && !tokenSupported"
+          class="small"
+          :disabled="manualBusy"
+          title="打开一个可见的 Chrome 窗口，profile 与自动发布实例隔离"
+          @click="openManualWindow"
+        >
+          打开浏览器窗口
+        </button>
+        <button class="danger" @click="emit('close', accountId)">关闭标签</button>
+      </div>
     </div>
 
     <div class="workspace-body">
@@ -211,6 +298,25 @@ onMounted(reloadForAccount);
           </p>
         </section>
       </template>
+
+      <!-- 手动发布窗口：可见 Chrome，独立 profile，登录态与工作台共用 -->
+      <section v-if="platformLoaded && !tokenSupported" class="panel">
+        <div class="panel-head">
+          <h3>手动发布窗口</h3>
+          <span class="manual-actions">
+            <button class="small" :disabled="manualBusy" @click="saveManualCookies">保存登录态</button>
+            <button class="small" :disabled="manualBusy" @click="closeManualWindow">关闭窗口</button>
+          </span>
+        </div>
+        <p class="token-hint">
+          打开一个真实可见的 Chrome 窗口，用独立 profile 与自动发布实例隔离。适合平台未实现自动发布、
+          需要自己拖拽上传或富文本编辑的场景。在窗口里登录或切换账号后点「保存登录态」，
+          工作台会话下次打开会直接复用。
+        </p>
+        <p v-if="manualMessage" class="token-message" :class="manualMessageKind">
+          {{ manualMessage }}
+        </p>
+      </section>
 
       <!-- 平台 API 令牌：仅令牌型平台显示，令牌按账号存储 -->
       <section v-if="tokenSupported" class="panel">
@@ -270,7 +376,15 @@ onMounted(reloadForAccount);
           </label>
           <label>
             定时表达式（cron，留空则立即发布）
-            <input v-model="cronExpr" placeholder="0 9 * * *" />
+            <input v-model="cronExpr" placeholder="0 9 * * *" :disabled="!!scheduledLocal" />
+          </label>
+          <label>
+            定时时间（本地时间，只发布一次；与 cron 二选一）
+            <input
+              v-model="scheduledLocal"
+              type="datetime-local"
+              :disabled="!!cronExpr.trim()"
+            />
           </label>
           <div class="form-actions">
             <button class="primary" :disabled="submitting" @click="submitTask">
@@ -305,7 +419,7 @@ onMounted(reloadForAccount);
             <tr v-for="t in tasks" :key="t.id">
               <td>{{ t.title || t.content?.slice(0, 20) || "-" }}</td>
               <td><span class="task-status" :class="t.status">{{ t.status }}</span></td>
-              <td>{{ t.cron_expr || "-" }}</td>
+              <td>{{ t.cron_expr || scheduleText(t) }}</td>
               <td>{{ new Date(t.created_at * 1000).toLocaleString() }}</td>
               <td class="result">{{ t.result || "-" }}</td>
             </tr>
@@ -343,6 +457,19 @@ onMounted(reloadForAccount);
 .workspace-header h2 {
   font-size: 15px;
   font-weight: 600;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manual-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .workspace-body {

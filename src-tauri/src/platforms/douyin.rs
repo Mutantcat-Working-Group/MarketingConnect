@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Mutantcat
 //! 抖音平台适配器
 //!
-//! Spike 已验证：Obscura 可完整渲染抖音创作者平台
+//! Spike 已验证：内置引擎可完整渲染抖音创作者平台
 //! （登录入口可见、JS 全量执行）。
 //!
 //! 登录流程（QR 扫码）：
@@ -38,6 +38,11 @@ impl PlatformAdapter for DouyinAdapter {
 
     fn creator_url(&self) -> &str {
         "https://creator.douyin.com/creator-micro/home"
+    }
+
+    fn publish_url(&self) -> Option<&str> {
+        // 手动窗口直接停在发布上传页，比落在创作者首页少点两下
+        Some("https://creator.douyin.com/creator-micro/content/upload")
     }
 
     fn capabilities(&self) -> super::Capabilities {

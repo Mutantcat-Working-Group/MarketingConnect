@@ -2,18 +2,20 @@
 // Copyright (C) 2026 Mutantcat
 //! 账号会话生命周期管理
 //!
-//! 每个账号对应一个独立的 Obscura BrowserContext：
-//! - open: 按账号代理获取/启动 Obscura 实例，创建 context + page，
+//! 每个账号对应一个独立的浏览器 BrowserContext：
+//! - open: 按账号代理获取/启动浏览器实例，创建 context + page，
 //!   从数据库恢复加密的 cookie
 //! - export_cookies: 导出页面 cookie，加密存入数据库
 //! - close: 释放 context
+//! - open_manual_window: 另起一个可见窗口（独立 profile），供人工手动发布；
+//!   该窗口的页面单独登记在 `manual_sessions`，可在关闭前把登录态写回数据库
 //!
 //! 会话注册表保存在内存中（account_id → session），
 //! cookie 的持久化在 SQLite（加密），跨重启恢复。
 
 use crate::credentials::{Credentials, cookie_param, http_origin};
 use crate::db::{Account, Db};
-use crate::obscura::{CdpBrowser, CdpState, ObscuraManager};
+use crate::obscura::{CdpBrowser, CdpState, ObscuraManager, MANUAL_KEY_PREFIX};
 use crate::platforms;
 use anyhow::{Context, Result};
 use chromiumoxide::cdp::browser_protocol::page::{
@@ -29,7 +31,7 @@ use tracing::{info, warn};
 pub struct AccountSession {
     pub context_id: String,
     pub page: Page,
-    /// 所属 Obscura 实例端口（用于释放时定位）
+    /// 所属引擎实例端口（用于释放时定位）
     pub port: u16,
     /// Only this configured platform origin may export/restore JS storage.
     trusted_origin: Option<String>,
@@ -41,9 +43,24 @@ pub struct AccountSession {
 /// 标记必须能自行过期，否则账号会被永久锁死、发布持续失败。
 const LOGIN_ACTIVE_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
+/// 手动窗口：独立的 BrowserContext + Page，不参与自动发布与巡检
+///
+/// 与 `AccountSession` 分开保存：手动窗口的 profile 是可见 Chrome 的独立目录，
+/// 生命周期由用户决定，不能被 `close` / 发布流程当成工作台会话处置。
+struct ManualWindow {
+    context_id: String,
+    page: Page,
+    /// 所属浏览器实例端口（用于释放时定位中继）
+    port: u16,
+    /// 只有平台配置的来源允许导出 JS storage
+    trusted_origin: Option<String>,
+}
+
 /// 会话注册表（account_id → session）
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<String, AccountSession>>,
+    /// account_id → 手动发布窗口
+    manual_sessions: Mutex<HashMap<String, ManualWindow>>,
     /// account_id → 最近一次交互时间
     interactive_logins: Mutex<HashMap<String, std::time::Instant>>,
 }
@@ -52,6 +69,7 @@ impl SessionRegistry {
     pub fn new() -> Self {
         SessionRegistry {
             sessions: Mutex::new(HashMap::new()),
+            manual_sessions: Mutex::new(HashMap::new()),
             interactive_logins: Mutex::new(HashMap::new()),
         }
     }
@@ -81,7 +99,7 @@ impl SessionRegistry {
 
     /// 为账号打开会话
     ///
-    /// 1. 按账号代理获取/启动 Obscura 实例并建立 CDP 连接
+    /// 1. 按账号代理获取/启动引擎实例并建立 CDP 连接
     /// 2. 创建独立 BrowserContext + about:blank 页面，先恢复 cookie
     /// 3. 注册仅匹配平台来源的 storage 初始化脚本，再导航并移除脚本
     pub async fn open(&self, app: &AppHandle, db: &Db, account: &Account) -> Result<()> {
@@ -200,6 +218,60 @@ impl SessionRegistry {
         Ok(())
     }
 
+    /// 导出手动窗口当前页面的 cookie，加密存入数据库
+    ///
+    /// 手动窗口里用户可能刚扫码登录或换了账号，这里把登录态写回同一份加密
+    /// 凭据，工作台的 headless 会话下次打开就能直接用。
+    pub async fn export_manual_cookies(&self, db: &Db, account_id: &str) -> Result<usize> {
+        let (page, trusted_origin) = {
+            let sessions = self.manual_sessions.lock().unwrap();
+            let window = sessions
+                .get(account_id)
+                .context("手动窗口不存在，无法导出凭据")?;
+            (window.page.clone(), window.trusted_origin.clone())
+        };
+        export_page_cookies(db, account_id, &page, trusted_origin).await
+    }
+
+    /// 关闭并释放手动窗口：释放 context 并结束那条可见 Chrome 进程
+    ///
+    /// 「关闭窗口」必须真的把窗口关掉，否则界面说关掉了、用户眼前还留着一个
+    /// 空窗口。进程结束后同时清掉 CDP 连接与中继映射。
+    pub async fn close_manual_window(&self, app: &AppHandle, account_id: &str) -> Result<()> {
+        let window = self.manual_sessions.lock().unwrap().remove(account_id);
+        if let Some(window) = window {
+            info!("关闭账号 {} 的手动窗口", account_id);
+            let cdp = app.state::<CdpState>();
+            // CDP 连接以「中继端口」为键；只查已有中继，不要为一个即将结束的
+            // 引擎新建中继（`port_for` 会起一个新任务）。
+            if let Some(relay_port) = app
+                .state::<crate::obscura::CdpRelay>()
+                .lookup(window.port)
+                .await
+            {
+                if let Some(browser) = cdp.get(relay_port).await {
+                    // 窗口已经被用户叉掉时释放会失败，这不算错误
+                    let _ = browser.dispose_context(&window.context_id).await;
+                }
+                cdp.remove(relay_port).await;
+            }
+            forget_relay_mapping(app, window.port).await;
+            app.state::<ObscuraManager>()
+                .stop_key(&format!("{MANUAL_KEY_PREFIX}{account_id}"));
+        }
+        Ok(())
+    }
+
+    /// 当前打开的手动窗口对应的账号 ID 列表
+    pub fn manual_account_ids(&self) -> Vec<String> {
+        self.manual_sessions
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     /// 获取账号的 Page 克隆（不存在返回 None）
     pub fn get_page(&self, account_id: &str) -> Option<Page> {
         self.sessions
@@ -209,6 +281,24 @@ impl SessionRegistry {
             .map(|s| s.page.clone())
     }
 
+    /// 导出手动窗口账号的 Page（不存在返回 None）
+    pub fn get_manual_page(&self, account_id: &str) -> Option<Page> {
+        self.manual_sessions
+            .lock()
+            .unwrap()
+            .get(account_id)
+            .map(|s| s.page.clone())
+    }
+
+    /// 手动窗口已打开时返回它所属的实例端口
+    pub fn manual_window_port(&self, account_id: &str) -> Option<u16> {
+        self.manual_sessions
+            .lock()
+            .unwrap()
+            .get(account_id)
+            .map(|s| s.port)
+    }
+
     /// 导出账号当前页面的 cookie，加密存入数据库
     pub async fn export_cookies(&self, db: &Db, account_id: &str) -> Result<usize> {
         let (page, trusted_origin) = {
@@ -216,40 +306,7 @@ impl SessionRegistry {
             let session = sessions.get(account_id).context("账号会话不存在，无法导出凭据")?;
             (session.page.clone(), session.trusted_origin.clone())
         };
-
-        // Browser-wide Storage.getCookies scoping is not verified for Obscura.
-        // Network.getCookies via Page guarantees target isolation, at the cost of
-        // omitting cookies that do not match the current page/frame URLs.
-        let cookies = page.get_cookies().await
-            .map_err(|_| anyhow::anyhow!("页面 cookie 导出失败"))?;
-        let count = cookies.len();
-        let values = serde_json::to_value(&cookies)
-            .map_err(|_| anyhow::anyhow!("凭据序列化失败"))?;
-        let mut saved = Credentials::new(values.as_array().cloned().unwrap_or_default());
-        if let Some(origin) = trusted_origin {
-            match export_storage(&page, &origin).await {
-                Ok(Some(storage)) => {
-                    saved.origin = Some(storage.origin);
-                    saved.url = Some(storage.url);
-                    saved.local_storage = storage.local_storage;
-                    saved.session_storage = storage.session_storage;
-                }
-                Ok(None) => warn!("页面来源不匹配，跳过 storage 导出"),
-                Err(_) => return Err(anyhow::anyhow!("页面 storage 导出失败，未覆盖已保存凭据")),
-            }
-        }
-        // 空快照通常意味着页面被重定向到空白页或尚未真正登录；
-        // 直接写入会用空数据覆盖可用凭据，导致下次打开直接掉登录。
-        if count == 0
-            && saved.local_storage.is_empty()
-            && saved.session_storage.is_empty()
-        {
-            return Err(anyhow::anyhow!("未读取到任何登录凭证，已保留原有凭据"));
-        }
-        db.save_account_cookies(account_id, &saved.to_json()?)
-            .map_err(|_| anyhow::anyhow!("保存账号凭据失败"))?;
-        info!("已导出 {} 个 cookie", count);
-        Ok(count)
+        export_page_cookies(db, account_id, &page, trusted_origin).await
     }
 
     /// 截取账号当前页面（PNG 字节）
@@ -272,23 +329,66 @@ impl SessionRegistry {
         Ok(png)
     }
 
-    /// 当前打开的会话数量
-    pub fn len(&self) -> usize {
-        self.sessions.lock().unwrap().len()
-    }
-
-    /// 是否没有打开的会话
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// 当前打开会话的账号 ID 列表
     pub fn open_account_ids(&self) -> Vec<String> {
         self.sessions.lock().unwrap().keys().cloned().collect()
     }
 }
 
-/// 按账号代理解析 Obscura 实例与 CDP 连接
+/// 把一个页面的 cookie 与 storage 导出并加密存入数据库
+///
+/// 工作台会话与手动窗口共用这段逻辑：两者的差别只在页面从哪来。
+async fn export_page_cookies(
+    db: &Db,
+    account_id: &str,
+    page: &Page,
+    trusted_origin: Option<String>,
+) -> Result<usize> {
+    // 用 Page 作用域的 Network.getCookies，保证只导出该页面所属 context 的
+    // cookie（浏览器级 Storage.getCookies 会跨 context 泄漏）。
+    let cookies = page.get_cookies().await
+        .map_err(|_| anyhow::anyhow!("页面 cookie 导出失败"))?;
+    let count = cookies.len();
+    let values = serde_json::to_value(&cookies)
+        .map_err(|_| anyhow::anyhow!("凭据序列化失败"))?;
+    let mut saved = Credentials::new(values.as_array().cloned().unwrap_or_default());
+    if let Some(origin) = trusted_origin {
+        match export_storage(page, &origin).await {
+            Ok(Some(storage)) => {
+                saved.origin = Some(storage.origin);
+                saved.url = Some(storage.url);
+                saved.local_storage = storage.local_storage;
+                saved.session_storage = storage.session_storage;
+            }
+            Ok(None) => warn!("页面来源不匹配，跳过 storage 导出"),
+            Err(_) => return Err(anyhow::anyhow!("页面 storage 导出失败，未覆盖已保存凭据")),
+        }
+    }
+    // 空快照通常意味着页面被重定向到空白页或尚未真正登录；
+    // 直接写入会用空数据覆盖可用凭据，导致下次打开直接掉登录。
+    if count == 0
+        && saved.local_storage.is_empty()
+        && saved.session_storage.is_empty()
+    {
+        return Err(anyhow::anyhow!("未读取到任何登录凭证，已保留原有凭据"));
+    }
+    db.save_account_cookies(account_id, &saved.to_json()?)
+        .map_err(|_| anyhow::anyhow!("保存账号凭据失败"))?;
+    info!("已导出 {} 个 cookie", count);
+    Ok(count)
+}
+
+/// 引擎实例被停止后，丢掉它在中继里登记的端口映射
+///
+/// 映射只增不减会让 `CdpRelay.ports` 一直留着指向已死引擎的条目；
+/// 引擎端口虽然每次都重新分配，但长期运行后仍是无界增长。
+async fn forget_relay_mapping(app: &AppHandle, engine_port: u16) {
+    app.state::<crate::obscura::CdpRelay>()
+        .forget(engine_port)
+        .await;
+}
+
+/// 按账号代理解析引擎实例与 CDP 连接
 ///
 /// 返回 (实例端口, CDP 浏览器连接)。
 pub async fn resolve_browser(
@@ -425,10 +525,15 @@ fn storage_restore_script(saved: &Credentials, trusted_origin: &str) -> Result<S
 /// 转发做不到的。登录态由同一份加密 cookie 恢复，因此与工作台里的
 /// headless 会话保持一致，但**两个实例的 profile 目录不同**，互不干扰。
 ///
+/// 窗口的页面会登记进 `SessionRegistry.manual_sessions`：这样「保存登录态」
+/// 才能在窗口仍然存活时把 cookie 写回数据库。重复调用只把已有窗口置前，
+/// 不会再开第二个（同一个 profile 目录起两个进程时 Chrome 会直接退出）。
+///
 /// 返回窗口所在实例的调试端口，便于排查与后续自动化接线。
 pub async fn open_manual_window(
     app: &AppHandle,
     db: &Db,
+    sessions: &SessionRegistry,
     account: &Account,
 ) -> Result<u16> {
     let adapter = platforms::find_adapter(&account.platform, Some(db))
@@ -437,6 +542,19 @@ pub async fn open_manual_window(
     // 令牌型平台没有浏览器登录态，手动窗口没有意义。
     if adapter.token_hint().is_some() {
         anyhow::bail!("该平台是令牌型平台，请在账号工作台配置 API 令牌，无需浏览器窗口");
+    }
+
+    // 已打开：置前并复用，避免同一 profile 起第二个进程
+    if let (Some(port), Some(page)) = (
+        sessions.manual_window_port(&account.id),
+        sessions.get_manual_page(&account.id),
+    ) {
+        if page.bring_to_front().await.is_ok() {
+            info!("账号 {} 的手动窗口已打开，置前而不是重开", account.id);
+            return Ok(port);
+        }
+        // 窗口已被用户关掉：清掉残留登记，继续重新打开
+        sessions.manual_sessions.lock().unwrap().remove(&account.id);
     }
 
     let account_id = account.id.clone();
@@ -509,6 +627,19 @@ pub async fn open_manual_window(
     // 让 Chrome 窗口真正置前（headless 之外的实例本来就是可见窗口，
     // 这里只需要把页面带到前台）
     let _ = page.bring_to_front().await;
+
+    // 登记页面，供「保存登录态」在窗口存活时导出 cookie
+    let trusted_origin = http_origin(adapter.creator_url());
+    sessions.manual_sessions.lock().unwrap().insert(
+        account.id.clone(),
+        ManualWindow {
+            context_id,
+            page,
+            port,
+            trusted_origin,
+        },
+    );
+
     info!(
         "已为账号 {} 打开手动发布窗口：{}（端口 {}）",
         account.name, target_url, port

@@ -129,6 +129,7 @@ async function loadEngine() {
 async function loadLogs() {
   try {
     logs.value = await api.recentLogs(20);
+    nowSec.value = Math.floor(Date.now() / 1000);
   } catch {
     // 忽略
   }
@@ -137,15 +138,17 @@ async function loadLogs() {
 // 日志条只在启动时读一次，会一直显示几小时前的陈旧记录（用户看到两条
 // 相同的「会话已掉线」就是这么来的）。这里做两件事：
 // 1. 定时刷新，让底栏反映当前状态；
-// 2. 折叠相邻的重复记录，避免同一事件刷屏。
+// 2. 每类事件只留最新一条，且显示相对时间，避免旧告警冒充当前状态。
 let logTimer: ReturnType<typeof setInterval> | null = null;
+/** 用于计算相对时间的当前时刻，随日志刷新一起更新 */
+const nowSec = ref(Math.floor(Date.now() / 1000));
 
-/** 折叠相邻的重复日志：同一 event+detail 连续出现时只显示最新一条 */
+/** 同一账号的同一事件只保留最新一条：状态类事件（如 session_check）的新旧结论不能并排显示 */
 const visibleLogs = computed(() => {
   const seen = new Set<string>();
   const out: api.EventLog[] = [];
   for (const log of logs.value) {
-    const key = `${log.event}\u0000${log.detail ?? ""}`;
+    const key = `${log.account_id ?? ""}\u0000${log.event}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(log);
@@ -153,6 +156,15 @@ const visibleLogs = computed(() => {
   }
   return out;
 });
+
+function logTime(createdAt: number): string {
+  const diff = Math.max(0, nowSec.value - createdAt);
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天前`;
+  return new Date(createdAt * 1000).toLocaleDateString();
+}
 
 async function toggleEngine() {
   engineLoading.value = true;
@@ -335,6 +347,7 @@ onBeforeUnmount(() => {
         <!-- 底部日志条 -->
         <footer v-if="logs.length > 0" class="logbar">
           <span v-for="log in visibleLogs" :key="log.id" class="log-item" :class="log.level">
+            <span class="log-time">{{ logTime(log.created_at) }}</span>
             [{{ log.event }}] {{ log.detail || "" }}
           </span>
         </footer>
@@ -553,6 +566,11 @@ onBeforeUnmount(() => {
 
 .log-item.warn {
   color: var(--warning);
+}
+
+.log-time {
+  opacity: 0.6;
+  margin-right: 2px;
 }
 
 /* 设置弹层 */

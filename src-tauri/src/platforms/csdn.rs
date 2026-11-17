@@ -52,6 +52,10 @@ impl PlatformAdapter for CsdnAdapter {
         CREATOR_URL
     }
 
+    fn publish_url(&self) -> Option<&str> {
+        Some(PUBLISH_URL)
+    }
+
     fn capabilities(&self) -> super::Capabilities {
         // publish() 只读取 content.title 与 content.text 填入 Markdown 编辑器后点击发布；
         // 它不处理 media_paths / cover_path / topics，故这些位必须为 false——

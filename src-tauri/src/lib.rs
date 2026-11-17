@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Mutantcat
 //! 营销通 - 多平台矩阵营销号统一管理与发布工具
 //!
-//! 架构：Tauri 2 (Rust) + Vue 3 前端 + Obscura 无头浏览器引擎
+//! 架构：Tauri 2 (Rust) + Vue 3 前端 + Chrome/Chromium 无头浏览器引擎
 
 mod accounts;
 mod account_edit;
@@ -49,12 +49,12 @@ pub fn run() {
             let db = Db::open(&db_path).expect("数据库初始化失败");
             app.manage(db);
 
-            // Obscura 引擎管理器（多实例：按代理分组）
+            // 浏览器引擎管理器（多实例：按代理分组）
             app.manage(ObscuraManager::new());
 
             // CDP 连接状态与账号会话注册表
             app.manage(CdpState::new());
-            // CDP 中继（修补 Obscura Network 事件缺失的必填字段）
+            // CDP 中继（修补引擎 Network 事件缺失的必填字段）
             app.manage(obscura::CdpRelay::default());
             app.manage(SessionRegistry::new());
             app.manage(mcp::McpState::default());
@@ -105,7 +105,8 @@ pub fn run() {
             accounts::close_account_session,
             accounts::check_account_session,
             accounts::open_manual_window,
-            accounts::save_account_cookies,
+            accounts::save_manual_window_cookies,
+            accounts::close_manual_window,
             accounts::save_platform_token,
             accounts::api_token_configured,
             accounts::capture_screenshot,

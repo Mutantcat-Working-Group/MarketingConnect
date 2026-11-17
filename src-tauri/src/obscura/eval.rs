@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Mutantcat
 //! 带重试的页面求值
 //!
-//! 引擎（Obscura）在页面脚本自行跳转的瞬间会销毁并重建执行上下文，
+//! 引擎在页面脚本自行跳转的瞬间会销毁并重建执行上下文，
 //! 而 chromiumoxide 缓存的 context id 会短暂失效，表现为
 //! `Cannot find context with specified id: N`。
 //!

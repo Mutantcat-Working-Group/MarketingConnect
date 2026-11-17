@@ -78,6 +78,13 @@ impl PlatformAdapter for ZhihuAdapter {
         CREATOR_URL
     }
 
+    fn publish_url(&self) -> Option<&str> {
+        // 文章编辑器在 zhuanlan.zhihu.com，与创作者首页不同源。
+        // 手动窗口的 storage 受信来源仍取 creator_url：跨源时只导出 cookie，
+        // 登录态（z_c0）本身就在 cookie 里。
+        Some(WRITE_URL)
+    }
+
     fn token_hint(&self) -> Option<&str> {
         None
     }

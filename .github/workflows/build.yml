@@ -62,8 +62,10 @@ jobs:
             args: "--target x86_64-apple-darwin --bundles dmg"
             apple_signing_identity: "-"
             run_tests: false
-          # Windows x64。暂不出 arm64：Obscura 侧车无 arm64 Windows 产物，
-          # 且用户明确表示本批次暂不需要 Windows arm64。
+          # Windows x64。暂不出 arm64：本批次不需要 Windows arm64。
+          # 注意钉在用户机器上的 sidecar 引擎仍是 `binaries/obscura`（tauri.conf.json
+          # 的 externalBin），跑 Windows arm64 需要它的 arm64 产物；引擎解析实际走
+          # Chrome 时这条依赖仍在，故不要在没有该产物的情况下加矩阵项。
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: "--target x86_64-pc-windows-msvc --bundles nsis"

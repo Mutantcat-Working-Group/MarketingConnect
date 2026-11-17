@@ -36,6 +36,8 @@ impl WechatMpAdapter {
 ///
 /// 未登录时停留在 `https://mp.weixin.qq.com/`（无 token）；
 /// 登录后会带上 `token=` 并进入 `cgi-bin/` 路径。
+/// 仅被 `login()` 使用，而 `PlatformAdapter::login` 当前没有调用方。
+#[allow(dead_code)]
 fn is_logged_in(url: &str) -> bool {
     url.contains("token=") || url.contains("cgi-bin/")
 }

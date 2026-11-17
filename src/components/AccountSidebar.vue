@@ -187,6 +187,17 @@ async function checkSession(account: api.Account) {
   }
 }
 
+/** 打开一个可见的手动发布窗口（profile 与自动发布实例隔离） */
+async function openManualWindow(account: api.Account) {
+  notify(`正在为「${account.name}」打开浏览器窗口…`);
+  try {
+    const port = await api.openManualWindow(account.id);
+    notify(`窗口已打开（端口 ${port}）`);
+  } catch (e) {
+    notify(`打开窗口失败：${e}`);
+  }
+}
+
 function openMenu(e: MouseEvent, account: api.Account) {
   e.preventDefault();
   e.stopPropagation();
@@ -206,11 +217,17 @@ const menuItems = computed<MenuItem[]>(() => {
   const items: MenuItem[] = [
     { label: "打开工作台", shortcut: "Enter", action: () => emit("select", a.id) },
     { label: "检测会话", action: () => checkSession(a) },
+  ];
+  // 令牌型平台没有浏览器登录态，手动窗口没有意义
+  if (platforms.value.find((p) => p.id === a.platform)?.tokenSupported !== true) {
+    items.push({ label: "打开浏览器窗口", action: () => openManualWindow(a) });
+  }
+  items.push(
     { label: "编辑账号", action: () => editAccount(a) },
     { divider: true },
     { label: "复制备注名", action: () => copyText(a.name) },
     { label: "复制登录账号", action: () => copyText(a.username) },
-  ];
+  );
   if (a.proxy_url) {
     items.push({ label: "复制代理地址", action: () => copyText(a.proxy_url as string) });
   }
