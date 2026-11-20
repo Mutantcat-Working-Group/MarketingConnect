@@ -238,6 +238,33 @@ pub fn publish_page_url(adapter: &dyn PlatformAdapter) -> String {
         .to_string()
 }
 
+/// 发布结束后把页面带回创作者页（仅当确实停在别的源）
+///
+/// 知乎的发布页在 `zhuanlan.zhihu.com`、CSDN 编辑器在 `editor.csdn.net`，
+/// 与各自的 `creator_url` **不同源**。会话页面被留在发布页上时，
+/// 下一次 `check_session` 的 `evidence.origin` 与受信 origin 不等，
+/// 探测直接返回 false —— 于是「发布成功」接着就被判掉号并发通知。
+/// 发布成功或失败都调用这里：失败时页面同样可能已经跳走。
+pub async fn restore_creator_page(
+    page: &chromiumoxide::Page,
+    adapter: &dyn PlatformAdapter,
+) {
+    let creator_url = adapter.creator_url();
+    let creator_origin = crate::credentials::http_origin(creator_url);
+    let current = page.url().await.ok().flatten().unwrap_or_default();
+    let current_origin = crate::credentials::http_origin(&current);
+    if current_origin.is_some() && current_origin == creator_origin {
+        return;
+    }
+    if let Err(error) = page.goto(creator_url).await {
+        tracing::warn!(
+            "发布后回落创作者页失败（{}）：{}",
+            creator_url,
+            error
+        );
+    }
+}
+
 /// 按平台 ID 查找适配器
 pub fn find_adapter(platform_id: &str, db: Option<&Db>) -> Option<Box<dyn PlatformAdapter>> {
     all_adapters(db)

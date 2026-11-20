@@ -286,7 +286,10 @@ pub(crate) async fn execute_publish(app: &AppHandle, task_id: &str, account_id: 
         return;
     }
 
-    match adapter.publish(&page, &content).await {
+    let outcome = adapter.publish(&page, &content).await;
+    // 与工作台发布同理：页面若停在别的源，下一次巡检会误判掉号。
+    crate::platforms::restore_creator_page(&page, adapter.as_ref()).await;
+    match outcome {
         Ok(()) => mark_success(),
         Err(e) => {
             fail_task(&db, task_id, &format!("发布失败: {}", e));

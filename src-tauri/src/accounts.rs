@@ -585,7 +585,11 @@ pub async fn batch_publish(
             }
         };
 
-        match adapter.publish(&page, &publish_content).await {
+        let outcome = adapter.publish(&page, &publish_content).await;
+        // 发布页可能不在 creator_url 的源上（知乎 → zhuanlan、CSDN → editor），
+        // 留在那边会让下一次会话探测因跨源直接判掉号。
+        crate::platforms::restore_creator_page(&page, adapter.as_ref()).await;
+        match outcome {
             Ok(()) => finish_success(&mut results),
             Err(e) => finish_failure(&mut results, e.to_string()),
         }
