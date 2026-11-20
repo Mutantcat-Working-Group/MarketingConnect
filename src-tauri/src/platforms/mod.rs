@@ -250,12 +250,17 @@ pub async fn restore_creator_page(
     adapter: &dyn PlatformAdapter,
 ) {
     let creator_url = adapter.creator_url();
-    let creator_origin = crate::credentials::http_origin(creator_url);
+    let Some(creator_origin) = crate::credentials::http_origin(creator_url) else {
+        // 创作者页本身不是合法的 http(s) 地址（about:blank 之类）：无从回落。
+        return;
+    };
     let current = page.url().await.ok().flatten().unwrap_or_default();
     let current_origin = crate::credentials::http_origin(&current);
-    if current_origin.is_some() && current_origin == creator_origin {
+    if current_origin.as_deref() == Some(creator_origin.as_str()) {
         return;
     }
+    // 页面在别的源、或读不到地址（跨源导航中途）都要回落：读不到地址时
+    // 无法证明已在受信源上，漏一次就可能让下一次巡检误判掉号。
     if let Err(error) = page.goto(creator_url).await {
         tracing::warn!(
             "发布后回落创作者页失败（{}）：{}",
@@ -437,5 +442,52 @@ mod token_session_tests {
             .await
             .expect("读取未配置令牌不应报错");
         assert_eq!(result, TokenSession::NotConfigured);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::platforms;
+
+    /// 跨源发布页必须被认识，否则发布成功后页面停在别的源，下一次会话探测
+    /// 因 origin 不等直接判掉号，并发出系统通知/短信。
+    ///
+    /// 这条测试守的是 2026-11-20 的故障：知乎发布页在 zhuanlan、
+    /// CSDN 编辑器在 editor，两者都与 creator_url 不同源。
+    /// 新增平台时若配了跨源 publish_url，必须同时确认发布路径会回落。
+    #[test]
+    fn cross_origin_publish_pages_are_known_and_restored() {
+        let restorable = |adapter: &dyn platforms::PlatformAdapter| {
+            let Some(publish) = adapter.publish_url() else { return true };
+            let creator = crate::credentials::http_origin(adapter.creator_url());
+            let publish = crate::credentials::http_origin(publish);
+            if publish.is_none() { return true; }
+            if publish == creator { return true; }
+            // 跨源：调用方（accounts::batch_publish / scheduler::execute_publish）
+            // 都调用了 restore_creator_page，这里只需要源解析本身成立。
+            creator.is_some()
+        };
+        for adapter in platforms::all_adapters(None) {
+            assert!(
+                restorable(adapter.as_ref()),
+                "{} 的发布页与创作者页不同源但 origin 无法解析",
+                adapter.platform_id()
+            );
+        }
+    }
+
+    /// 发布路径必须回落创作者页：漏掉这条，「发布成功」紧接一次误报掉号。
+    #[test]
+    fn publish_paths_restore_the_creator_page() {
+        let accounts = include_str!("../accounts.rs");
+        assert!(
+            accounts.contains("restore_creator_page"),
+            "accounts.rs 的发布路径没有回落创作者页"
+        );
+        let scheduler = include_str!("../scheduler.rs");
+        assert!(
+            scheduler.contains("restore_creator_page"),
+            "scheduler.rs 的发布路径没有回落创作者页"
+        );
     }
 }
